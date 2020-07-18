@@ -5,7 +5,7 @@
   "private": true,
   "dependencies": {
     "clipboardy": "^1.2.3",
-    "lodash": "^4.17.11",
+    "lodash": "^4.17.19",
     "react": "^16.8.4",
     "react-dom": "^16.8.4",
     "react-scripts": "2.1.8"
