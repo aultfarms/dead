@@ -9,7 +9,7 @@
     "converter": "file:../converter/converter-1.0.1.tgz",
     "cross-spawn": "^5.1.0",
     "keycode": "^2.1.9",
-    "lodash": "^4.17.4",
+    "lodash": "^4.17.21",
     "material-ui": "^1.0.0-beta.25",
     "material-ui-dropzone": "^1.0.3",
     "material-ui-icons": "^1.0.0-beta.17",
