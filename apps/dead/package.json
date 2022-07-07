@@ -12,7 +12,7 @@
     "bluebird": "^3.5.5",
     "cerebral": "^5.1.1",
     "lodash": "^4.17.15",
-    "moment": "^2.24.0",
+    "moment": "^2.29.4",
     "moment-range": "^4.0.2",
     "numeral": "^2.0.6",
     "pure-css": "^1.0.4",
