@@ -17,7 +17,7 @@
     "react": "^16.2.0",
     "react-dom": "^16.2.0",
     "react-dropzone": "^4.2.3",
-    "react-scripts": "1.0.17",
+    "react-scripts": "5.0.1",
     "spawn-sync": "^1.0.15",
     "thread-sleep": "^2.0.0",
     "try-thread-sleep": "^1.0.2"
