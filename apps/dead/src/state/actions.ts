@@ -1,16 +1,22 @@
 import { action, runInAction } from 'mobx';
 import * as trelloLibrary from '@aultfarms/trello';
 import {
+  mergeLivestockRecords,
   records as livestockRecords,
+  removeDeathTag,
   repairCardName,
   repairConfigCardDescription,
   resolveTrelloCardUrl,
   upsertDeath,
   type AnalyticsFilters,
   type ConfigKind,
+  type LivestockRecords,
   type ParseIssue,
   type RecordKind,
+  type Tag,
+  type DeadRecord,
 } from '@aultfarms/livestock';
+import { writeArchiveOrgIds } from '@aultfarms/livestock-ui';
 import { state, type DeathDraft, type HistoryView } from './state';
 
 let messageId = 0;
@@ -40,6 +46,16 @@ function addActivity(text: string, type: 'good' | 'bad' = 'good'): void {
     type: type === 'good' ? 'success' : 'error',
     text,
   };
+}
+
+function applyLiveRecords(loaded: LivestockRecords): void {
+  state.records = loaded;
+  state.historicalRecords = null;
+  state.archivesLoadedKey = '';
+}
+
+function archiveKey(orgIds: string[], connectedOrgId: string): string {
+  return orgIds.filter(id => id && id !== connectedOrgId).slice().sort().join(',');
 }
 
 export const closeSnackbar = action('closeSnackbar', () => {
@@ -95,9 +111,15 @@ export const loadRecords = action('loadRecords', async () => {
   state.loading = true;
   state.fatalError = '';
   try {
-    const loaded = await livestockRecords.fetchRecords(await client());
+    const trello = await client();
+    const loaded = await livestockRecords.fetchRecords(trello);
+    if (!loaded) throw new Error('Livestock board was not found');
+    const organizations = await trello.listOrganizations();
+    const connectedOrg = trello.getConnectedOrganization();
     runInAction(() => {
-      state.records = loaded;
+      applyLiveRecords(loaded);
+      state.organizations = organizations;
+      state.connectedOrgId = connectedOrg?.id || '';
       state.trelloAuthorized = true;
       if (!state.draft.tag.color) {
         state.draft.tag.color = Object.keys(loaded.tagcolors)[0] || '';
@@ -175,8 +197,9 @@ export const saveDeath = action('saveDeath', async (force = false) => {
       return;
     }
     const loaded = await livestockRecords.fetchRecords(await client());
+    if (!loaded) throw new Error('Livestock board was not found');
     runInAction(() => {
-      state.records = loaded;
+      applyLiveRecords(loaded);
       state.draft = {
         ...state.draft,
         tag: { ...state.draft.tag, number: 0 },
@@ -217,8 +240,9 @@ export const repairIssue = action('repairIssue', async (issue: ParseIssue, newNa
       },
     });
     const loaded = await livestockRecords.fetchRecords(await client());
+    if (!loaded) throw new Error('Livestock board was not found');
     runInAction(() => {
-      state.records = loaded;
+      applyLiveRecords(loaded);
       state.lastRepair = {
         kind,
         field: 'name',
@@ -261,8 +285,9 @@ export const repairConfigIssue = action(
         newDescription,
       });
       const loaded = await livestockRecords.fetchRecords(await client());
+      if (!loaded) throw new Error('Livestock board was not found');
       runInAction(() => {
-        state.records = loaded;
+        applyLiveRecords(loaded);
         state.lastRepair = {
           kind,
           field: 'desc',
@@ -299,8 +324,9 @@ export const undoLastRepair = action('undoLastRepair', async () => {
         : { desc: repair.previousValue },
     );
     const loaded = await livestockRecords.fetchRecords(await client());
+    if (!loaded) throw new Error('Livestock board was not found');
     runInAction(() => {
-      state.records = loaded;
+      applyLiveRecords(loaded);
       state.lastRepair = null;
       addActivity('The last card repair was undone.');
     });
@@ -326,3 +352,89 @@ export const openIssueInTrello = action('openIssueInTrello', async (issue: Parse
     });
   }
 });
+
+export const toggleArchiveOrg = action('toggleArchiveOrg', (orgId: string) => {
+  if (!orgId || orgId === state.connectedOrgId) return;
+  const selected = new Set(state.archiveOrgIds);
+  if (selected.has(orgId)) selected.delete(orgId);
+  else selected.add(orgId);
+  state.archiveOrgIds = [...selected];
+  writeArchiveOrgIds(state.archiveOrgIds);
+  state.historicalRecords = null;
+  state.archivesLoadedKey = '';
+});
+
+export const ensureHistoricalRecords = action('ensureHistoricalRecords', async () => {
+  const live = state.records;
+  if (!live) return;
+  const key = archiveKey(state.archiveOrgIds, state.connectedOrgId);
+  if (state.historicalRecords && state.archivesLoadedKey === key) return;
+  const orgIds = key ? key.split(',') : [];
+  if (orgIds.length === 0) {
+    runInAction(() => {
+      state.historicalRecords = live;
+      state.archivesLoadedKey = key;
+      state.archivesLoading = false;
+    });
+    return;
+  }
+  state.archivesLoading = true;
+  try {
+    const trello = await client();
+    const archives = (
+      await Promise.all(orgIds.map(organizationId => livestockRecords.fetchRecords(trello, {
+        organizationId,
+        includeConfig: false,
+        optional: true,
+        parseOptions: {
+          tagColors: live.tagcolors,
+          treatmentTypes: live.treatmentTypes,
+        },
+      })))
+    ).filter((records): records is LivestockRecords => Boolean(records));
+    runInAction(() => {
+      if (!state.records) return;
+      state.historicalRecords = mergeLivestockRecords(state.records, archives);
+      state.archivesLoadedKey = key;
+    });
+  } catch (error) {
+    runInAction(() => {
+      state.historicalRecords = state.records;
+      addActivity(
+        `Could not load archive history: ${error instanceof Error ? error.message : String(error)}`,
+        'bad',
+      );
+    });
+  } finally {
+    runInAction(() => {
+      state.archivesLoading = false;
+    });
+  }
+});
+
+export const removeTagFromDeath = action(
+  'removeTagFromDeath',
+  async (record: DeadRecord, tag: Tag) => {
+    if (!state.records || state.saving) return;
+    state.saving = true;
+    try {
+      const result = await removeDeathTag(await client(), state.records, { record, tag });
+      const loaded = await livestockRecords.fetchRecords(await client());
+      if (!loaded) throw new Error('Livestock board was not found');
+      runInAction(() => {
+        applyLiveRecords(loaded);
+        addActivity(result.status === 'closed'
+          ? 'Death card closed after removing the last tag.'
+          : 'Tag removed from the death card.');
+      });
+    } catch (error) {
+      runInAction(() => {
+        addActivity(`Tag was not removed: ${error instanceof Error ? error.message : String(error)}`, 'bad');
+      });
+    } finally {
+      runInAction(() => {
+        state.saving = false;
+      });
+    }
+  },
+);

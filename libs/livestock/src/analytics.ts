@@ -148,6 +148,20 @@ export type DeadAnalytics = {
   groups: DeadGroupAnalytics[];
 };
 
+export type GroupDayAnimal = {
+  color: string;
+  number: number;
+  protocol?: string;
+  treatmentCount: number;
+  deathDate?: string;
+};
+
+export type GroupDayBucket = {
+  date: string;
+  count: number;
+  animals: GroupDayAnimal[];
+};
+
 type ResolvedTreatment = {
   record: TreatmentRecord;
   tag: Tag;
@@ -633,4 +647,108 @@ export function computeDeadAnalytics(
     },
     groups,
   };
+}
+
+function deathDateByIdentity(
+  records: LivestockRecords,
+  groupname: string,
+): Map<string, string> {
+  const indexes = records.indexes || buildLivestockIndexes(records);
+  const dates = new Map<string, string>();
+  for (const death of Object.values(indexes.deathsByTag).flat()) {
+    if (!death.group || death.group.groupname !== groupname) continue;
+    if (death.tag.color.toUpperCase() === 'NOTAG') continue;
+    const identity = identityFor(death.group, death.tag);
+    const current = dates.get(identity);
+    if (!current || death.record.date < current) dates.set(identity, death.record.date);
+  }
+  return dates;
+}
+
+function treatmentCountByIdentity(
+  records: LivestockRecords,
+  groupname: string,
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const entry of treatmentEntries(records, { groupnames: [groupname] }).included) {
+    counts.set(entry.identity, (counts.get(entry.identity) || 0) + 1);
+  }
+  return counts;
+}
+
+function bucketsFromAnimals(
+  byDate: Map<string, Map<string, GroupDayAnimal>>,
+): GroupDayBucket[] {
+  return [...byDate].map(([date, animals]) => ({
+    date,
+    count: animals.size,
+    animals: [...animals.values()].sort((left, right) => (
+      left.color.localeCompare(right.color) || left.number - right.number
+    )),
+  })).sort((left, right) => right.date.localeCompare(left.date));
+}
+
+export function listGroupTreatmentDays(
+  records: LivestockRecords,
+  groupname: string,
+  filters: AnalyticsFilters = {},
+): GroupDayBucket[] {
+  const lifetimeCounts = treatmentCountByIdentity(records, groupname);
+  const deathDates = deathDateByIdentity(records, groupname);
+  const visible = treatmentEntries(records, { ...filters, groupnames: [groupname] }).included;
+  const byDate = new Map<string, Map<string, GroupDayAnimal>>();
+  for (const entry of visible) {
+    let animals = byDate.get(entry.record.date);
+    if (!animals) {
+      animals = new Map();
+      byDate.set(entry.record.date, animals);
+    }
+    const existing = animals.get(entry.identity);
+    const protocol = existing?.protocol && existing.protocol !== entry.record.treatment
+      ? `${existing.protocol}, ${entry.record.treatment}`
+      : entry.record.treatment;
+    animals.set(entry.identity, {
+      color: entry.tag.color,
+      number: entry.tag.number,
+      protocol,
+      treatmentCount: lifetimeCounts.get(entry.identity) || 0,
+      deathDate: deathDates.get(entry.identity),
+    });
+  }
+  return bucketsFromAnimals(byDate);
+}
+
+export function listGroupDeathDays(
+  records: LivestockRecords,
+  groupname: string,
+  filters: AnalyticsFilters = {},
+): GroupDayBucket[] {
+  const indexes = records.indexes || buildLivestockIndexes(records);
+  const lifetimeTreatments = treatmentEntries(records, { groupnames: [groupname] }).included;
+  const byDate = new Map<string, Map<string, GroupDayAnimal>>();
+  for (const record of records.dead.records) {
+    if (!inDateRange(record.date, filters)) continue;
+    for (const tag of record.tags) {
+      const group = tag.color.toUpperCase() === 'NOTAG'
+        ? false
+        : groupForTagInIndex(indexes.groupsByTag, indexes.groupsByName, tag, record.date);
+      if (!group || group.groupname !== groupname) continue;
+      const identity = identityFor(group, tag);
+      let animals = byDate.get(record.date);
+      if (!animals) {
+        animals = new Map();
+        byDate.set(record.date, animals);
+      }
+      const priorTreatments = lifetimeTreatments.filter(entry => (
+        entry.identity === identity && entry.record.date <= record.date
+      )).length;
+      animals.set(identity, {
+        color: tag.color,
+        number: tag.number,
+        treatmentCount: priorTreatments,
+        deathDate: record.date,
+      });
+    }
+  }
+  return bucketsFromAnimals(byDate);
 }

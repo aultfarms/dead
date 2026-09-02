@@ -5,6 +5,8 @@ import type {
   LivestockRecords,
   RecordKind,
 } from '@aultfarms/livestock';
+import type { TrelloOrg } from '@aultfarms/trello';
+import { readArchiveOrgIds } from '@aultfarms/livestock-ui';
 
 export type HistoryView = 'prefs' | 'date' | 'tag' | 'groups' | 'trends' | 'issues';
 
@@ -40,6 +42,12 @@ export type AppState = {
   trelloAuthorized: boolean;
   fatalError: string;
   records: LivestockRecords | null;
+  historicalRecords: LivestockRecords | null;
+  organizations: TrelloOrg[];
+  connectedOrgId: string;
+  archiveOrgIds: string[];
+  archivesLoading: boolean;
+  archivesLoadedKey: string;
   draft: TreatmentDraft;
   dirty: boolean;
   view: HistoryView;
@@ -63,6 +71,12 @@ export const state = observable<AppState>({
   trelloAuthorized: false,
   fatalError: '',
   records: null,
+  historicalRecords: null,
+  organizations: [],
+  connectedOrgId: '',
+  archiveOrgIds: readArchiveOrgIds(),
+  archivesLoading: false,
+  archivesLoadedKey: '',
   draft: {
     date: today(),
     treatment: '',

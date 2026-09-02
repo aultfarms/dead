@@ -6,6 +6,7 @@ import {
   assertTrelloBoards,
   assertTrelloCards,
   type TrelloList,
+  type TrelloOrg,
   assertTrelloLists} from './types.js';
 
 const info = debug('af/trello#index:info');
@@ -17,15 +18,32 @@ export type Client = ReturnType<typeof getUniversalClient>;
 export function getUniversalClient(client: PlatformSpecificTrelloLib) {
 
   let orgid = '';
+  let organizations: TrelloOrg[] = [];
+  let connectedOrganization: TrelloOrg | null = null;
+
+  function orgLabel(org: TrelloOrg): string {
+    return org.displayName || org.name;
+  }
+
+  async function loadOrganizations(): Promise<TrelloOrg[]> {
+    const orgs = await client.get('/members/me/organizations', { fields: 'id,name,displayName' });
+    assertTrelloOrgs(orgs);
+    organizations = orgs.map(org => ({
+      ...org,
+      displayName: orgLabel(org),
+    }));
+    return organizations;
+  }
+
   async function connect({ org }: { org?: string }) {
     await client.waitUntilLoaded();
     await client.authorize();
     if (!org) org = defaultOrg;
-    const orgs = await client.get('/members/me/organizations', { fields: 'id,name,displayName' });
-    assertTrelloOrgs(orgs);
+    const orgs = await loadOrganizations();
     for (const o of orgs) {
-      if (o.displayName === org) {
+      if (orgLabel(o) === org || o.name === org) {
         orgid = o.id;
+        connectedOrganization = o;
         info('connect: Successfully connected to Trello and found organization with name', org);
         return;
       }
@@ -34,16 +52,35 @@ export function getUniversalClient(client: PlatformSpecificTrelloLib) {
     throw new Error(`ERROR: Could not find organization with name ${org}`);
   }
 
-
-  async function findBoardidByName(name: string): Promise<string> {
+  async function listOrganizations(): Promise<TrelloOrg[]> {
     await client.waitUntilLoaded();
-    const boards = await client.get(`/organizations/${orgid}/boards`, { fields: 'id,name,pos' });
+    if (organizations.length) return organizations;
+    return loadOrganizations();
+  }
+
+  function getConnectedOrganization(): TrelloOrg | null {
+    return connectedOrganization;
+  }
+
+  async function findBoardidByNameIfExists(name: string, organizationId?: string): Promise<string | null> {
+    await client.waitUntilLoaded();
+    const id = organizationId || orgid;
+    if (!id) throw new Error('ERROR: not connected to a Trello organization');
+    const boards = await client.get(`/organizations/${id}/boards`, { fields: 'id,name,pos' });
     assertTrelloBoards(boards);
     for (const b of boards) {
       if (b.name === name) return b.id;
     }
-    throw new Error(`ERROR: could not find board with name ${name} in org ${orgid}`);
-  };
+    return null;
+  }
+
+  async function findBoardidByName(name: string, organizationId?: string): Promise<string> {
+    const found = await findBoardidByNameIfExists(name, organizationId);
+    if (!found) {
+      throw new Error(`ERROR: could not find board with name ${name} in org ${organizationId || orgid}`);
+    }
+    return found;
+  }
 
 
   // Returns all the lists and cards, or only those that match the given listnames if provided
@@ -80,6 +117,9 @@ export function getUniversalClient(client: PlatformSpecificTrelloLib) {
   return {
     ...client,
     connect,
+    listOrganizations,
+    getConnectedOrganization,
+    findBoardidByNameIfExists,
     findBoardidByName,
     findListsAndCardsOnBoard,
     saveNewCardAtBottomOfList,

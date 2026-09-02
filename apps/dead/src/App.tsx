@@ -4,6 +4,7 @@ import { Helmet, HelmetProvider } from 'react-helmet-async';
 import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
 import CircularProgress from '@mui/material/CircularProgress';
+import Dialog from '@mui/material/Dialog';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import {
@@ -84,7 +85,8 @@ const HistorySelector = observer(function HistorySelector({
   onSelect: (view: DeadView) => void;
 }) {
   const { state } = React.useContext(context);
-  const issueCount = state.records?.issues?.filter(issue => issue.severity === 'error').length || 0;
+  const records = state.historicalRecords || state.records;
+  const issueCount = records?.issues?.filter(issue => issue.severity === 'error').length || 0;
 
   return (
     <div className="historyselector" role="tablist" aria-label="History views">
@@ -123,6 +125,27 @@ const Preferences = observer(function Preferences() {
       <button className="prefslink" type="button" onClick={() => void actions.logoutTrello()}>
         Change Trello Account
       </button>
+      <p className="prefsinfo">History organizations</p>
+      <div className="prefsorgs">
+        {state.organizations.map(org => {
+          const live = org.id === state.connectedOrgId;
+          const checked = live || state.archiveOrgIds.includes(org.id);
+          return (
+            <label className="prefsorg" key={org.id}>
+              <input
+                type="checkbox"
+                checked={checked}
+                disabled={live}
+                onChange={() => actions.toggleArchiveOrg(org.id)}
+              />
+              {org.displayName || org.name}{live ? ' (live)' : ''}
+            </label>
+          );
+        })}
+        {state.organizations.length === 0 && (
+          <p className="prefsinfo">Trello organizations will appear after login.</p>
+        )}
+      </div>
       <p className="prefsinfo">Dead App Version {pkg.version}</p>
       <p className="prefsinfo">{issueCount} invalid Trello card{issueCount === 1 ? '' : 's'}</p>
     </div>
@@ -133,10 +156,12 @@ function DeadCalfCard({
   records,
   record,
   tag,
+  onSelect,
 }: {
   records: LivestockRecords;
   record: DeadRecord;
   tag: Tag;
+  onSelect: () => void;
 }) {
   const group = groupForTag(records, tag, record.date);
   const treatments = records.treatments.records
@@ -163,7 +188,15 @@ function DeadCalfCard({
   if (mortality !== null && mortality >= 20) groupClass = 'calfcardbadgroup';
 
   return (
-    <div className="calfcard">
+    <div
+      className="calfcard"
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') onSelect();
+      }}
+    >
       <div className="calfcardheader">
         <span
           className="calfcardcolortext"
@@ -199,8 +232,9 @@ function DeadCalfCard({
 }
 
 const DateHistory = observer(function DateHistory() {
-  const { state } = React.useContext(context);
+  const { state, actions } = React.useContext(context);
   const records = state.records;
+  const [pending, setPending] = React.useState<{ record: DeadRecord; tag: Tag } | null>(null);
   const dateRecords = records?.dead.records
     .filter(record => record.date === state.draft.date)
     .sort((left, right) => right.dateLastActivity.localeCompare(left.dateLastActivity)) || [];
@@ -216,9 +250,30 @@ const DateHistory = observer(function DateHistory() {
             records={records}
             record={record}
             tag={tag}
+            onSelect={() => setPending({ record, tag })}
           />
         ))
       ))}
+      <Dialog open={Boolean(pending)} onClose={() => setPending(null)}>
+        <div className="tageditdialog">
+          <div className="tagedittitle">
+            Remove {pending ? `${pending.tag.color}${pending.tag.number}` : 'tag'} from this death card?
+          </div>
+          <div className="tageditactions">
+            <button className="tageditremove" type="button" onClick={() => setPending(null)}>Cancel</button>
+            <button
+              className="tageditdone"
+              type="button"
+              onClick={() => {
+                if (pending) void actions.removeTagFromDeath(pending.record, pending.tag);
+                setPending(null);
+              }}
+            >
+              Remove
+            </button>
+          </div>
+        </div>
+      </Dialog>
     </div>
   );
 });
@@ -304,6 +359,15 @@ function DeferredAnalyticsView({
   return view === 'groups' ? <GroupMortality /> : <DeadAnalytics />;
 }
 
+function ArchiveLoading({ label }: { label: string }) {
+  return (
+    <div className="historyloading" role="status">
+      <span className="tabspinner" aria-hidden="true" />
+      Loading {label}…
+    </div>
+  );
+}
+
 const History = observer(function History({
   onHeavyViewLoaded,
 }: {
@@ -314,6 +378,9 @@ const History = observer(function History({
   if (state.view === 'prefs') return <Preferences />;
   if (state.view === 'date') return <DateHistory />;
   if (state.view === 'tag') return <TagHistory />;
+  if (state.archivesLoading) {
+    return <ArchiveLoading label={state.view} />;
+  }
   if (state.view === 'groups' || state.view === 'trends') {
     return (
       <DeferredAnalyticsView
@@ -330,17 +397,23 @@ const TagPane = observer(function TagPane() {
   const { state, actions } = React.useContext(context);
   const [loadingView, setLoadingView] = React.useState<DeadView | null>(null);
   const fullWidthView = state.view === 'groups' || state.view === 'trends' || state.view === 'issues';
+  const historyView = state.view === 'groups' || state.view === 'trends' || state.view === 'issues';
+  React.useEffect(() => {
+    if (!historyView) return;
+    void actions.ensureHistoricalRecords();
+  }, [actions, historyView, state.archiveOrgIds, state.records]);
   const selectView = React.useCallback((view: DeadView) => {
     if (view === state.view) return;
     setLoadingView(view === 'groups' || view === 'trends' ? view : null);
     actions.setView(view);
   }, [actions, state.view]);
   const heavyViewLoaded = React.useCallback(() => setLoadingView(null), []);
+  const tabLoadingView = state.archivesLoading && historyView ? state.view : loadingView;
   return (
     <div className={`tagpane ${fullWidthView ? 'tagpane-full' : ''}`}>
       <DraftTagBar />
       <Message />
-      <HistorySelector loadingView={loadingView} onSelect={selectView} />
+      <HistorySelector loadingView={tabLoadingView} onSelect={selectView} />
       <History onHeavyViewLoaded={heavyViewLoaded} />
     </div>
   );

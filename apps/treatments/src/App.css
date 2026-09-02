@@ -160,6 +160,7 @@
   padding: 5px;
   margin-bottom: 5px;
   box-shadow: 2px 2px 1px #999999;
+  cursor: pointer;
 }
 
 .treatmentcardcount {
@@ -176,6 +177,7 @@
   padding-right: 5px;
   margin-left: 5px;
   margin-right: 5px;
+  cursor: pointer;
 }
 
 .treatmentcardtags {
@@ -264,6 +266,63 @@
   padding-left: 10px;
   padding-top: 10px;
   margin: 0;
+}
+
+.prefsorgs {
+  display: flex;
+  flex-direction: column;
+  padding-left: 10px;
+  padding-top: 6px;
+  gap: 4px;
+}
+
+.prefsorg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tageditdialog {
+  display: flex;
+  flex-direction: column;
+  min-width: 260px;
+  padding: 12px;
+  gap: 8px;
+  font-family: sans-serif;
+}
+
+.tagedittitle {
+  font-weight: bold;
+}
+
+.tageditlist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.tageditrow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.tageditremove,
+.tageditdone {
+  border: 1px solid #888888;
+  border-radius: 3px;
+  padding: 4px 8px;
+  background: linear-gradient(#FFFFFF, #EEEEEE);
+  font-weight: bold;
+}
+
+.tageditdone {
+  color: #FFFFFF;
+  border-color: #1976D2;
+  background: linear-gradient(to bottom, #7abcff 0%, #60abf8 44%, #4096ee 100%);
 }
 
 .legacy-treatment-dialog .MuiDialog-paper {
@@ -375,6 +434,11 @@
   background: linear-gradient(to top, #7abcff 0%, #60abf8 44%, #4096ee 100%);
 }
 
+.treatmentEditorDoneButton:disabled {
+  color: #888888;
+  background: #CCCCCC;
+}
+
 .loading-screen {
   height: 100%;
   min-height: 100%;
@@ -430,6 +494,58 @@
 .group-row-bad .MuiTableCell-root {
   color: red;
   font-weight: bold;
+}
+
+.group-row-clickable {
+  cursor: pointer;
+}
+
+.groupdetaildialog {
+  display: flex;
+  flex-direction: column;
+  min-width: 280px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 12px;
+  gap: 8px;
+  font-family: sans-serif;
+}
+
+.groupdetailtitle {
+  font-weight: bold;
+}
+
+.groupdetailempty {
+  color: #666666;
+}
+
+.groupdetailday {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.groupdetaildayhead {
+  font-weight: bold;
+  border-bottom: 1px solid #CCCCCC;
+}
+
+.groupdetailanimal {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding-left: 4px;
+}
+
+.groupdetaildone {
+  color: #FFFFFF;
+  border: 1px solid #1976D2;
+  border-radius: 3px;
+  padding: 6px 8px;
+  font-weight: bold;
+  background: linear-gradient(to bottom, #7abcff 0%, #60abf8 44%, #4096ee 100%);
 }
 
 @media (orientation: landscape) {

@@ -1,5 +1,6 @@
 import {
   fetchRecords,
+  mergeLivestockRecords,
   parseDeadCard,
   parseIncomingCard,
   parseTagColorsCard,
@@ -17,15 +18,23 @@ import {
   groupForTagInIndex,
 } from '../util.js';
 import {
+  removeDeathTag,
+  removeTreatmentTag,
   repairCardName,
   repairConfigCardDescription,
   resolveTrelloCardUrl,
+  updateTreatmentRecord,
   upsertDeath,
   upsertTreatment,
   validateCardNameRepair,
   validateConfigCardDescriptionRepair,
 } from '../mutations.js';
-import { computeDeadAnalytics, computeTreatmentsAnalytics } from '../analytics.js';
+import {
+  computeDeadAnalytics,
+  computeTreatmentsAnalytics,
+  listGroupDeathDays,
+  listGroupTreatmentDays,
+} from '../analytics.js';
 import type {
   DeadRecord,
   IncomingRecord,
@@ -269,6 +278,7 @@ test('fetchRecords preserves valid cards while aggregating config and card issue
     ],
   } as unknown as Parameters<typeof fetchRecords>[0];
   const records = await fetchRecords(fake);
+  assert(records, 'fetchRecords returned livestock records');
   equal(records.listIds?.dead, 'list-dead', 'Dead list ID');
   equal(records.treatmentTypes?.length, treatmentTypes.length, 'Treatment Types loaded');
   equal(records.treatments.records.length, 1, 'Valid treatment retained');
@@ -277,14 +287,14 @@ test('fetchRecords preserves valid cards while aggregating config and card issue
   assert(records.indexes, 'Indexes returned from fetchRecords');
 });
 
-function fakeMutationClient(writes: { path: string; name: string }[]) {
-  const respond = (path: string, params: { name?: string; idList?: string }) => {
-    writes.push({ path, name: params.name || '' });
+function fakeMutationClient(writes: { path: string; name: string; closed?: boolean }[]) {
+  const respond = (path: string, params: { name?: string; idList?: string; closed?: boolean }) => {
+    writes.push({ path, name: params.name || '', closed: params.closed });
     const id = path === '/cards' ? `created-${writes.length}` : path.split('/').pop() || 'updated';
-    return [fixtureCard(id, params.idList || 'list-unknown', params.name || '')];
+    return [fixtureCard(id, params.idList || 'list-unknown', params.name || 'closed')];
   };
   return {
-    put: async (path: string, params: { name?: string; idList?: string }) => respond(path, params),
+    put: async (path: string, params: { name?: string; idList?: string; closed?: boolean }) => respond(path, params),
     post: async (path: string, params: { name?: string; idList?: string }) => respond(path, params),
   } as unknown as Parameters<typeof upsertTreatment>[0];
 }
@@ -583,6 +593,151 @@ test('analytics expose inclusions, exclusions, historical reuse, and missing den
     groupnames: ['TEST:JAN23-1', 'MISSING:GROUP'],
   });
   assert(!missingCohortAnalytics.mortalityRate.available, 'Missing selected cohort makes denominator unavailable');
+});
+
+test('merged archive incoming groups keep historical tag identities distinct', () => {
+  const liveIncoming = parsed(parseIncomingCard(historicalGroupCards[1]!, { tagColors }));
+  const archiveIncoming = parsed(parseIncomingCard(historicalGroupCards[0]!, { tagColors }));
+  const liveTreatment = parsed(parseTreatmentCard(
+    fixtureCard('t-live', 'list-treatments', '2024-02-01: Za: RED1'),
+    { tagColors, treatmentTypes },
+  ));
+  const archiveTreatment = parsed(parseTreatmentCard(
+    fixtureCard('t-archive', 'list-treatments', '2023-02-01: Za: RED1'),
+    { tagColors, treatmentTypes },
+  ));
+  const live = makeRecords([liveIncoming], [liveTreatment]);
+  const archive = makeRecords([archiveIncoming], [archiveTreatment]);
+  const merged = mergeLivestockRecords(live, [archive]);
+  equal(merged.listIds?.treatments, live.listIds?.treatments, 'Live list IDs are preserved');
+  equal(merged.incoming.records.length, 2, 'Incoming groups are merged');
+  const analytics = computeTreatmentsAnalytics(merged);
+  equal(analytics.uniqueTreatedHead, 2, 'Reused tags in different groups stay distinct');
+  const oldGroup = groupForTagInIndex(
+    merged.indexes!.groupsByTag,
+    merged.indexes!.groupsByName,
+    { color: 'RED', number: 1 },
+    '2023-06-01',
+  );
+  equal(oldGroup && oldGroup.groupname, 'TEST:JAN23-1', 'Archive group owns the 2023 tag');
+});
+
+test('treatment protocol rename updates the existing card name', async () => {
+  const existing = parsed(parseTreatmentCard(
+    fixtureCard('treatment-rename', 'list-treatments', '2024-02-01: Za: RED1 YELLOW2'),
+    { tagColors, treatmentTypes },
+  ));
+  const records = makeRecords([], [existing]);
+  const writes: { path: string; name: string; closed?: boolean }[] = [];
+  const renamed = await updateTreatmentRecord(fakeMutationClient(writes), records, {
+    record: existing,
+    treatment: 'No',
+  });
+  equal(renamed.status, 'updated', 'Protocol rename status');
+  equal(renamed.record.treatment, 'No', 'Protocol renamed');
+  equal(writes.length, 1, 'Protocol rename performs one write');
+  equal(writes[0]?.closed, undefined, 'Protocol rename does not close the card');
+});
+
+test('treatment protocol rename merges into an existing same-day card', async () => {
+  const source = parsed(parseTreatmentCard(
+    fixtureCard('treatment-source', 'list-treatments', '2024-02-01: Za: RED1'),
+    { tagColors, treatmentTypes },
+  ));
+  const target = parsed(parseTreatmentCard(
+    fixtureCard('treatment-target', 'list-treatments', '2024-02-01: No: YELLOW2'),
+    { tagColors, treatmentTypes },
+  ));
+  const records = makeRecords([], [source, target]);
+  const writes: { path: string; name: string; closed?: boolean }[] = [];
+  const merged = await updateTreatmentRecord(fakeMutationClient(writes), records, {
+    record: source,
+    treatment: 'No',
+  });
+  equal(merged.status, 'updated', 'Merged protocol status');
+  equal(merged.record.tags.length, 2, 'Merged protocol tags');
+  equal(writes.length, 2, 'Merge writes target then closes source');
+  equal(writes[1]?.closed, true, 'Source card is closed after merge');
+});
+
+test('removing a treatment tag updates or closes the card', async () => {
+  const existing = parsed(parseTreatmentCard(
+    fixtureCard('treatment-tags', 'list-treatments', '2024-02-01: Za: RED1 YELLOW2'),
+    { tagColors, treatmentTypes },
+  ));
+  const records = makeRecords([], [existing]);
+  const writes: { path: string; name: string; closed?: boolean }[] = [];
+  const client = fakeMutationClient(writes);
+  const updated = await removeTreatmentTag(client, records, {
+    record: existing,
+    tag: { color: 'RED', number: 1 },
+  });
+  equal(updated.status, 'updated', 'Tag removal status');
+  equal(updated.record.tags.length, 1, 'Remaining treatment tags');
+  const closed = await removeTreatmentTag(client, records, {
+    record: updated.record,
+    tag: { color: 'YELLOW', number: 2 },
+  });
+  equal(closed.status, 'closed', 'Last treatment tag closes the card');
+  equal(writes[1]?.closed, true, 'Empty treatment card is closed');
+});
+
+test('removing a death tag updates or closes the card', async () => {
+  const existing = parsed(parseDeadCard(
+    fixtureCard('dead-tags', 'list-dead', '2024-02-01: RED1 YELLOW2'),
+    { tagColors },
+  ));
+  const records = makeRecords([], [], [existing]);
+  const writes: { path: string; name: string; closed?: boolean }[] = [];
+  const client = fakeMutationClient(writes);
+  const updated = await removeDeathTag(client, records, {
+    record: existing,
+    tag: { color: 'RED', number: 1 },
+  });
+  equal(updated.status, 'updated', 'Death tag removal status');
+  equal(updated.record.tags.length, 1, 'Remaining death tags');
+  const closed = await removeDeathTag(client, records, {
+    record: updated.record,
+    tag: { color: 'YELLOW', number: 2 },
+  });
+  equal(closed.status, 'closed', 'Last death tag closes the card');
+  equal(writes[1]?.closed, true, 'Empty death card is closed');
+});
+
+test('group day lists keep reused tags distinct and annotate deaths', () => {
+  const incoming = historicalGroupCards.map(card => parsed(parseIncomingCard(card, { tagColors })));
+  const treatments = [
+    fixtureCard('t-old-1', 'list-treatments', '2023-02-01: Za: RED1'),
+    fixtureCard('t-old-2', 'list-treatments', '2023-02-10: No: RED1'),
+    fixtureCard('t-new', 'list-treatments', '2024-02-01: Za: RED1'),
+  ].map(card => parsed(parseTreatmentCard(card, { tagColors, treatmentTypes })));
+  const dead = [
+    fixtureCard('d-old', 'list-dead', '2023-03-01: RED1'),
+    fixtureCard('d-new', 'list-dead', '2024-03-01: RED1'),
+  ].map(card => parsed(parseDeadCard(card, { tagColors })));
+  const records = makeRecords(incoming, treatments, dead);
+
+  const oldTreatments = listGroupTreatmentDays(records, 'TEST:JAN23-1');
+  equal(oldTreatments.length, 2, 'Historical group has two treatment days');
+  equal(oldTreatments[0]?.date, '2023-02-10', 'Newest treatment day first');
+  equal(oldTreatments[0]?.count, 1, 'One treated head on newest day');
+  equal(oldTreatments[0]?.animals[0]?.treatmentCount, 2, 'Lifetime treatments in group');
+  equal(oldTreatments[0]?.animals[0]?.deathDate, '2023-03-01', 'Historical death annotated');
+
+  const newTreatments = listGroupTreatmentDays(records, 'TEST:JAN24-1');
+  equal(newTreatments.length, 1, 'Reused tag is a separate 2024 identity');
+  equal(newTreatments[0]?.animals[0]?.treatmentCount, 1, '2024 animal has one treatment');
+  equal(newTreatments[0]?.animals[0]?.deathDate, '2024-03-01', '2024 death stays on 2024 identity');
+
+  const filtered = listGroupTreatmentDays(records, 'TEST:JAN23-1', { startDate: '2023-02-10' });
+  equal(filtered.length, 1, 'Date filter hides earlier treatment days');
+  equal(filtered[0]?.animals[0]?.treatmentCount, 2, 'Filtered view still reports lifetime count');
+
+  const oldDeaths = listGroupDeathDays(records, 'TEST:JAN23-1');
+  equal(oldDeaths.length, 1, 'Historical group has one death day');
+  equal(oldDeaths[0]?.animals[0]?.treatmentCount, 2, 'Death lists prior treatments');
+  const newDeaths = listGroupDeathDays(records, 'TEST:JAN24-1');
+  equal(newDeaths[0]?.animals[0]?.treatmentCount, 1, 'Reused tag death keeps 2024 treatments');
 });
 
 async function run(): Promise<void> {

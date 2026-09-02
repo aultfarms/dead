@@ -11,6 +11,8 @@ import {
   groupForTag,
   sameTag,
   tokenizeTreatmentProtocol,
+  type Tag,
+  type TreatmentRecord,
 } from '@aultfarms/livestock';
 import { ColorBar, Keypad, TagBar, useTagEntryKeys } from '@aultfarms/livestock-ui';
 import pkg from '../package.json';
@@ -77,7 +79,8 @@ const HistorySelector = observer(function HistorySelector({
   onSelect: (view: HistoryView) => void;
 }) {
   const { state } = React.useContext(context);
-  const issueCount = state.records?.issues?.filter(issue => issue.severity === 'error').length || 0;
+  const records = state.historicalRecords || state.records;
+  const issueCount = records?.issues?.filter(issue => issue.severity === 'error').length || 0;
 
   return (
     <div className="historyselector" role="tablist" aria-label="History views">
@@ -116,6 +119,27 @@ const Preferences = observer(function Preferences() {
       <button className="prefslink" type="button" onClick={() => void actions.logoutTrello()}>
         Change Trello Account
       </button>
+      <p className="prefsinfo">History organizations</p>
+      <div className="prefsorgs">
+        {state.organizations.map(org => {
+          const live = org.id === state.connectedOrgId;
+          const checked = live || state.archiveOrgIds.includes(org.id);
+          return (
+            <label className="prefsorg" key={org.id}>
+              <input
+                type="checkbox"
+                checked={checked}
+                disabled={live}
+                onChange={() => actions.toggleArchiveOrg(org.id)}
+              />
+              {org.displayName || org.name}{live ? ' (live)' : ''}
+            </label>
+          );
+        })}
+        {state.organizations.length === 0 && (
+          <p className="prefsinfo">Trello organizations will appear after login.</p>
+        )}
+      </div>
       <p className="prefsinfo">Treatments App Version {pkg.version}</p>
       <p className="prefsinfo">{issueCount} invalid Trello card{issueCount === 1 ? '' : 's'}</p>
     </div>
@@ -123,20 +147,58 @@ const Preferences = observer(function Preferences() {
 });
 
 const DateHistory = observer(function DateHistory() {
-  const { state } = React.useContext(context);
+  const { state, actions } = React.useContext(context);
+  const [editingRecord, setEditingRecord] = React.useState<TreatmentRecord | null>(null);
+  const [editProtocol, setEditProtocol] = React.useState('');
+  const [tagRecordId, setTagRecordId] = React.useState<string | null>(null);
   const records = state.records?.treatments.records
     .filter(record => record.date === state.draft.date)
     .sort((left, right) => right.dateLastActivity.localeCompare(left.dateLastActivity)) || [];
   const total = records.reduce((sum, record) => sum + record.tags.length, 0);
+  const tagRecord = records.find(record => record.id === tagRecordId) || null;
+
+  const commitProtocol = () => {
+    if (editingRecord && editProtocol.trim() && editProtocol.trim() !== editingRecord.treatment) {
+      void actions.changeTreatmentProtocol(editingRecord, editProtocol);
+    }
+    setEditingRecord(null);
+  };
 
   return (
     <div className="history">
       <div className="historytitle">{state.draft.date}: {total} head total.</div>
       {records.map(record => (
-        <div className="treatmentcard" key={record.id}>
+        <div
+          className="treatmentcard"
+          key={record.id}
+          role="button"
+          tabIndex={0}
+          onClick={() => setTagRecordId(record.id)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') setTagRecordId(record.id);
+          }}
+        >
           <div className="treatmentcardcount">{record.tags.length} head</div>
           -
-          <div className="treatmentcardtreatment">{record.treatment}</div>
+          <div
+            className="treatmentcardtreatment"
+            role="button"
+            tabIndex={0}
+            onClick={(event) => {
+              event.stopPropagation();
+              setEditingRecord(record);
+              setEditProtocol(record.treatment);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.stopPropagation();
+                setEditingRecord(record);
+                setEditProtocol(record.treatment);
+              }
+            }}
+          >
+            {record.treatment}
+          </div>
           <div className="treatmentcardtags">
             {record.tags.map((tag, index) => (
               <div className="treatmentcardtag" key={`${tag.color}${tag.number}-${index}`}>
@@ -146,6 +208,20 @@ const DateHistory = observer(function DateHistory() {
           </div>
         </div>
       ))}
+      <TreatmentEditor
+        open={Boolean(editingRecord)}
+        treatment={editProtocol}
+        onChange={setEditProtocol}
+        onCancel={() => setEditingRecord(null)}
+        onDone={commitProtocol}
+      />
+      <TagEditDialog
+        record={tagRecord}
+        onClose={() => setTagRecordId(null)}
+        onRemove={(tag) => {
+          if (tagRecord) void actions.removeTagFromTreatment(tagRecord, tag);
+        }}
+      />
     </div>
   );
 });
@@ -226,6 +302,15 @@ function DeferredAnalyticsView({
   return view === 'groups' ? <GroupOutcomes /> : <TreatmentAnalytics />;
 }
 
+function ArchiveLoading({ label }: { label: string }) {
+  return (
+    <div className="historyloading" role="status">
+      <span className="tabspinner" aria-hidden="true" />
+      Loading {label}…
+    </div>
+  );
+}
+
 const History = observer(function History({
   onHeavyViewLoaded,
 }: {
@@ -236,6 +321,9 @@ const History = observer(function History({
   if (state.view === 'prefs') return <Preferences />;
   if (state.view === 'date') return <DateHistory />;
   if (state.view === 'tag') return <TagHistory />;
+  if (state.archivesLoading) {
+    return <ArchiveLoading label={state.view} />;
+  }
   if (state.view === 'groups' || state.view === 'trends') {
     return (
       <DeferredAnalyticsView
@@ -252,34 +340,79 @@ const TagPane = observer(function TagPane() {
   const { state, actions } = React.useContext(context);
   const [loadingView, setLoadingView] = React.useState<HistoryView | null>(null);
   const fullWidthView = state.view === 'groups' || state.view === 'trends' || state.view === 'issues';
+  const historyView = state.view === 'groups' || state.view === 'trends' || state.view === 'issues';
+  React.useEffect(() => {
+    if (!historyView) return;
+    void actions.ensureHistoricalRecords();
+  }, [actions, historyView, state.archiveOrgIds, state.records]);
   const selectView = React.useCallback((view: HistoryView) => {
     if (view === state.view) return;
     setLoadingView(view === 'groups' || view === 'trends' ? view : null);
     actions.setView(view);
   }, [actions, state.view]);
   const heavyViewLoaded = React.useCallback(() => setLoadingView(null), []);
+  const tabLoadingView = state.archivesLoading && historyView ? state.view : loadingView;
 
   return (
     <div className={`tagpane ${fullWidthView ? 'tagpane-full' : ''}`}>
       <DraftTagBar />
       <Message />
-      <HistorySelector loadingView={loadingView} onSelect={selectView} />
+      <HistorySelector loadingView={tabLoadingView} onSelect={selectView} />
       <History onHeavyViewLoaded={heavyViewLoaded} />
     </div>
   );
 });
 
 
+function TagEditDialog({
+  record,
+  onClose,
+  onRemove,
+}: {
+  record: TreatmentRecord | null;
+  onClose: () => void;
+  onRemove: (tag: Tag) => void;
+}) {
+  return (
+    <Dialog open={Boolean(record)} onClose={onClose}>
+      <div className="tageditdialog">
+        <div className="tagedittitle">Remove tags from {record?.treatment || 'treatment'}</div>
+        <div className="tageditlist">
+          {(record?.tags || []).map((tag, index) => (
+            <div className="tageditrow" key={`${tag.color}${tag.number}-${index}`}>
+              <span>{tag.color}{tag.number}</span>
+              <button
+                className="tageditremove"
+                type="button"
+                onClick={() => onRemove(tag)}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+        <button className="tageditdone" type="button" onClick={onClose}>Done</button>
+      </div>
+    </Dialog>
+  );
+}
+
 const TreatmentEditor = observer(function TreatmentEditor({
   open,
-  onClose,
+  treatment,
+  onChange,
+  onDone,
+  onCancel,
 }: {
   open: boolean;
-  onClose: () => void;
+  treatment: string;
+  onChange: (treatment: string) => void;
+  onDone: () => void;
+  onCancel: () => void;
 }) {
-  const { state, actions } = React.useContext(context);
+  const { state } = React.useContext(context);
   const treatmentTypes = state.records?.treatmentTypes || [];
-  const tokenized = tokenizeTreatmentProtocol(state.draft.treatment, treatmentTypes);
+  const tokenized = tokenizeTreatmentProtocol(treatment, treatmentTypes);
   const selectedCodes = new Set(tokenized.tokens.map(token => token.code));
   const recent = state.records?.treatments.records
     .slice()
@@ -288,13 +421,13 @@ const TreatmentEditor = observer(function TreatmentEditor({
       if (!result.includes(record.treatment) && result.length < 5) result.push(record.treatment);
       return result;
     }, []) || [];
+  const canDone = tokenized.unknown.length === 0;
 
   const toggleCode = (code: string) => {
     const found = tokenized.tokens.find(token => token.code === code);
-    const treatment = found
-      ? `${state.draft.treatment.slice(0, found.start)}${state.draft.treatment.slice(found.end)}`
-      : `${state.draft.treatment}${code}`;
-    actions.changeDraft({ treatment });
+    onChange(found
+      ? `${treatment.slice(0, found.start)}${treatment.slice(found.end)}`
+      : `${treatment}${code}`);
   };
 
   return (
@@ -302,15 +435,15 @@ const TreatmentEditor = observer(function TreatmentEditor({
       className="legacy-treatment-dialog"
       fullScreen
       open={open}
-      onClose={onClose}
+      onClose={onCancel}
     >
       <div className="treatmentEditor">
         <input
           aria-label="Treatment protocol"
           className={`treatmentEditorTextInput ${tokenized.unknown.length ? 'treatmentEditorTextInputError' : ''}`}
           type="text"
-          value={state.draft.treatment}
-          onChange={(event) => actions.changeDraft({ treatment: event.target.value })}
+          value={treatment}
+          onChange={(event) => onChange(event.target.value)}
         />
         <div className="treatmentCodesList">
           {treatmentTypes.map(type => (
@@ -334,13 +467,18 @@ const TreatmentEditor = observer(function TreatmentEditor({
               className="recentTreatmentsButton"
               key={protocol}
               type="button"
-              onClick={() => actions.changeDraft({ treatment: protocol })}
+              onClick={() => onChange(protocol)}
             >
               {protocol}
             </button>
           ))}
         </div>
-        <button className="treatmentEditorDoneButton" type="button" onClick={onClose}>
+        <button
+          className="treatmentEditorDoneButton"
+          type="button"
+          disabled={!canDone}
+          onClick={onDone}
+        >
           Done
         </button>
       </div>
@@ -431,7 +569,13 @@ const RecordInput = observer(function RecordInput() {
       >
         {state.saving ? 'SAVING TREATMENT' : 'SAVE TREATMENT'}
       </div>
-      <TreatmentEditor open={treatmentEditorOpen} onClose={() => setTreatmentEditorOpen(false)} />
+      <TreatmentEditor
+        open={treatmentEditorOpen}
+        treatment={state.draft.treatment}
+        onChange={(treatment) => actions.changeDraft({ treatment })}
+        onDone={() => setTreatmentEditorOpen(false)}
+        onCancel={() => setTreatmentEditorOpen(false)}
+      />
     </div>
   );
 });

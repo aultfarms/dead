@@ -15,6 +15,7 @@ import { Bar } from 'react-chartjs-2';
 import Box from '@mui/material/Box';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
+import Dialog from '@mui/material/Dialog';
 import FormControl from '@mui/material/FormControl';
 import InputLabel from '@mui/material/InputLabel';
 import MenuItem from '@mui/material/MenuItem';
@@ -31,6 +32,8 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import {
   computeDeadAnalytics,
+  listGroupDeathDays,
+  type GroupDayBucket,
   type NumericMetric,
 } from '@aultfarms/livestock';
 import { context } from './state';
@@ -62,7 +65,8 @@ function Kpi({ label, value, detail }: { label: string; value: React.ReactNode; 
 
 function AnalyticsFilters() {
   const { state, actions } = React.useContext(context);
-  const groups = state.records?.incoming.records.map(group => group.groupname).sort() || [];
+  const records = state.historicalRecords || state.records;
+  const groups = records?.incoming.records.map(group => group.groupname).sort() || [];
   const selectedGroups = state.filters.groupnames || [];
   const changeGroups = (event: SelectChangeEvent<string[]>) => {
     const value = event.target.value;
@@ -114,13 +118,54 @@ function AnalyticsFilters() {
   );
 }
 
+function GroupDayDialog({
+  title,
+  days,
+  onClose,
+}: {
+  title: string;
+  days: GroupDayBucket[];
+  onClose: () => void;
+}) {
+  return (
+    <Dialog open onClose={onClose}>
+      <div className="groupdetaildialog">
+        <div className="groupdetailtitle">{title}</div>
+        {days.length === 0 ? (
+          <div className="groupdetailempty">No deaths in this group.</div>
+        ) : days.map(day => (
+          <div className="groupdetailday" key={day.date}>
+            <div className="groupdetaildayhead">{day.date}: {day.count} head</div>
+            {day.animals.map(animal => (
+              <div className="groupdetailanimal" key={`${animal.color}${animal.number}`}>
+                <span>{animal.color}{animal.number}</span>
+                <span>
+                  {animal.treatmentCount > 0
+                    ? `${animal.treatmentCount} treatment${animal.treatmentCount === 1 ? '' : 's'}`
+                    : 'untreated'}
+                </span>
+              </div>
+            ))}
+          </div>
+        ))}
+        <button className="groupdetaildone" type="button" onClick={onClose}>Done</button>
+      </div>
+    </Dialog>
+  );
+}
+
 export const GroupMortality = observer(function GroupMortality() {
   const { state } = React.useContext(context);
-  const records = state.records;
+  const records = state.historicalRecords || state.records;
   const filters = state.filters;
+  const [selectedGroup, setSelectedGroup] = React.useState<string | null>(null);
   const analytics = React.useMemo(
     () => (records ? computeDeadAnalytics(records, filters) : null),
     [records, filters],
+  );
+  const days = React.useMemo(
+    () => (records && selectedGroup ? listGroupDeathDays(records, selectedGroup, filters) : []),
+    [records, selectedGroup, filters],
   );
   if (!analytics) return null;
   const groups = [...analytics.groups].sort((left, right) => (
@@ -130,6 +175,7 @@ export const GroupMortality = observer(function GroupMortality() {
   ));
 
   return (
+    <>
     <TableContainer component={Paper} variant="outlined" className="history-scroll">
       <Table size="small" stickyHeader>
         <TableHead>
@@ -150,7 +196,12 @@ export const GroupMortality = observer(function GroupMortality() {
                   ? 'group-row-neutral'
                   : 'group-row-bad';
             return (
-              <TableRow className={rowClass} key={group.group.groupname}>
+              <TableRow
+                className={`${rowClass} group-row-clickable`}
+                key={group.group.groupname}
+                hover
+                onClick={() => setSelectedGroup(group.group.groupname)}
+              >
                 <TableCell>{group.group.groupname}</TableCell>
                 <TableCell
                   align="right"
@@ -181,12 +232,20 @@ export const GroupMortality = observer(function GroupMortality() {
         </TableBody>
       </Table>
     </TableContainer>
+    {selectedGroup && (
+      <GroupDayDialog
+        title={selectedGroup}
+        days={days}
+        onClose={() => setSelectedGroup(null)}
+      />
+    )}
+    </>
   );
 });
 
 export const DeadAnalytics = observer(function DeadAnalytics() {
   const { state } = React.useContext(context);
-  const records = state.records;
+  const records = state.historicalRecords || state.records;
   const filters = state.filters;
   const analytics = React.useMemo(
     () => (records ? computeDeadAnalytics(records, filters) : null),

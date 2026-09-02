@@ -5,10 +5,11 @@ import { context } from './state';
 
 export const Issues = observer(function Issues() {
   const { state, actions } = React.useContext(context);
+  const records = state.historicalRecords || state.records;
   return (
     <IssuesView
-      issues={state.records?.issues || []}
-      records={state.records}
+      issues={records?.issues || []}
+      records={records}
       repairing={state.repairing}
       lastRepair={state.lastRepair}
       onRepairIssue={actions.repairIssue}

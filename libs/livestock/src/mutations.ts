@@ -27,7 +27,7 @@ export type RecordKind = 'incoming' | 'treatment' | 'dead';
 export type ConfigKind = 'tagColors' | 'treatmentTypes';
 export type LivestockRecord = IncomingRecord | TreatmentRecord | DeadRecord;
 export type LivestockConfigRecord = TagColors | TreatmentType[];
-export type MutationStatus = 'created' | 'updated' | 'unchanged' | 'duplicate';
+export type MutationStatus = 'created' | 'updated' | 'unchanged' | 'duplicate' | 'closed';
 
 export type MutationResult<T extends LivestockRecord> = {
   status: MutationStatus;
@@ -48,6 +48,21 @@ export type DeathUpsertInput = {
   note?: string | false;
   idList?: string;
   duplicateWindowDays?: number;
+};
+
+export type TreatmentUpdateInput = {
+  record: TreatmentRecord;
+  treatment: string;
+};
+
+export type TreatmentTagRemoveInput = {
+  record: TreatmentRecord;
+  tag: Tag;
+};
+
+export type DeathTagRemoveInput = {
+  record: DeadRecord;
+  tag: Tag;
 };
 
 export type CardNameRepairInput = {
@@ -122,6 +137,18 @@ function recordParseOptions(records: LivestockRecords): RecordParseOptions {
     tagColors: records.tagcolors,
     treatmentTypes: records.treatmentTypes,
   };
+}
+
+function mergeTags(existing: Tag[], incoming: Tag[]): Tag[] {
+  const tags = [...existing];
+  for (const tag of incoming) {
+    if (!tags.some(candidate => sameTag(candidate, tag))) tags.push(tag);
+  }
+  return tags;
+}
+
+async function closeCard(trello: client.Client, cardId: string): Promise<void> {
+  await trello.put(`/cards/${cardId}`, { closed: true });
 }
 
 export function validateCardNameRepair(input: CardNameRepairInput): CardNameRepairValidation {
@@ -275,4 +302,131 @@ export async function upsertDeath(
     'Death upsert',
   );
   return { status: existing ? 'updated' : 'created', record };
+}
+
+async function putTreatmentName(
+  trello: client.Client,
+  records: LivestockRecords,
+  record: TreatmentRecord,
+  treatment: string,
+  tags: Tag[],
+): Promise<TreatmentRecord> {
+  const candidateName = serializeTreatmentRecord({
+    date: record.date,
+    treatment,
+    tags,
+  });
+  const candidate: LivestockCardSource = {
+    id: record.id,
+    idList: record.idList,
+    name: candidateName,
+    dateLastActivity: record.dateLastActivity,
+  };
+  parseOrThrow(
+    parseTreatmentCard(candidate, recordParseOptions(records)),
+    'Treatment update validation',
+  );
+  const response = await trello.put(`/cards/${record.id}`, {
+    name: candidateName,
+    idList: record.idList,
+  });
+  return parseOrThrow(
+    parseTreatmentCard(firstCard(response), recordParseOptions(records)),
+    'Treatment update',
+  );
+}
+
+export async function updateTreatmentRecord(
+  trello: client.Client,
+  records: LivestockRecords,
+  input: TreatmentUpdateInput,
+): Promise<MutationResult<TreatmentRecord>> {
+  const treatment = input.treatment.trim();
+  if (!treatment) throw new Error('Treatment protocol is required');
+  if (treatment === input.record.treatment) {
+    return { status: 'unchanged', record: input.record };
+  }
+  const target = records.treatments.records.find(record => (
+    record.id !== input.record.id
+    && record.date === input.record.date
+    && record.treatment === treatment
+  ));
+  if (!target) {
+    const record = await putTreatmentName(
+      trello,
+      records,
+      input.record,
+      treatment,
+      input.record.tags,
+    );
+    return { status: 'updated', record };
+  }
+  const record = await putTreatmentName(
+    trello,
+    records,
+    target,
+    treatment,
+    mergeTags(target.tags, input.record.tags),
+  );
+  await closeCard(trello, input.record.id);
+  return { status: 'updated', record };
+}
+
+export async function removeTreatmentTag(
+  trello: client.Client,
+  records: LivestockRecords,
+  input: TreatmentTagRemoveInput,
+): Promise<MutationResult<TreatmentRecord>> {
+  const remaining = input.record.tags.filter(tag => !sameTag(tag, input.tag));
+  if (remaining.length === input.record.tags.length) {
+    return { status: 'unchanged', record: input.record };
+  }
+  if (remaining.length === 0) {
+    await closeCard(trello, input.record.id);
+    return { status: 'closed', record: input.record };
+  }
+  const record = await putTreatmentName(
+    trello,
+    records,
+    input.record,
+    input.record.treatment,
+    remaining,
+  );
+  return { status: 'updated', record };
+}
+
+export async function removeDeathTag(
+  trello: client.Client,
+  records: LivestockRecords,
+  input: DeathTagRemoveInput,
+): Promise<MutationResult<DeadRecord>> {
+  const remaining = input.record.tags.filter(tag => !sameTag(tag, input.tag));
+  if (remaining.length === input.record.tags.length) {
+    return { status: 'unchanged', record: input.record };
+  }
+  if (remaining.length === 0) {
+    await closeCard(trello, input.record.id);
+    return { status: 'closed', record: input.record };
+  }
+  const candidateName = serializeDeadRecord({
+    date: input.record.date,
+    tags: remaining,
+    note: input.record.note,
+  });
+  const candidate: LivestockCardSource = {
+    id: input.record.id,
+    idList: input.record.idList,
+    name: candidateName,
+    dateLastActivity: input.record.dateLastActivity,
+  };
+  parseOrThrow(parseDeadCard(candidate, recordParseOptions(records)), 'Death tag removal validation');
+  const response = await trello.put(`/cards/${input.record.id}`, {
+    name: candidateName,
+    idList: input.record.idList,
+  });
+  const record = parseOrThrow(
+    parseDeadCard(firstCard(response), recordParseOptions(records)),
+    'Death tag removal',
+  );
+  return { status: 'updated', record };
 }

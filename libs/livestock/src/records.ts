@@ -655,17 +655,68 @@ export function deadCardToRecord(c: TrelloCard): DeadRecord | ErrorRecord {
   return result.ok ? result.record : errorRecordFor(result);
 }
 
-export async function fetchRecords(trello: client.Client): Promise<LivestockRecords> {
-  const livestockboardid = await trello.findBoardidByName('Livestock');
-  if (!livestockboardid) throw new Error('ERROR: could not find Livestock board in Trello');
+export type FetchRecordsOptions = {
+  organizationId?: string;
+  parseOptions?: RecordParseOptions;
+  includeConfig?: boolean;
+  optional?: boolean;
+};
+
+function emptyBoardList(name: LivestockListName) {
+  return { id: '', idBoard: '', name, cards: [] as TrelloCard[] };
+}
+
+type LivestockTrelloClient = client.Client & {
+  findBoardidByNameIfExists?: (name: string, organizationId?: string) => Promise<string | null>;
+  findBoardidByName: (name: string, organizationId?: string) => Promise<string>;
+};
+
+async function resolveLivestockBoardId(
+  trello: client.Client,
+  options: FetchRecordsOptions,
+): Promise<string | null> {
+  const lookup = trello as LivestockTrelloClient;
+  if (typeof lookup.findBoardidByNameIfExists === 'function') {
+    const found = await lookup.findBoardidByNameIfExists('Livestock', options.organizationId);
+    if (found) return found;
+    if (options.optional) return null;
+    throw new Error('ERROR: could not find Livestock board in Trello');
+  }
+  try {
+    return await lookup.findBoardidByName('Livestock', options.organizationId);
+  } catch (error) {
+    if (options.optional) return null;
+    throw error;
+  }
+}
+
+export async function fetchRecords(
+  trello: client.Client,
+  options?: Omit<FetchRecordsOptions, 'optional'> & { optional?: false },
+): Promise<LivestockRecords>;
+export async function fetchRecords(
+  trello: client.Client,
+  options: FetchRecordsOptions & { optional: true },
+): Promise<LivestockRecords | null>;
+export async function fetchRecords(
+  trello: client.Client,
+  options: FetchRecordsOptions = {},
+): Promise<LivestockRecords | null> {
+  const includeConfig = options.includeConfig !== false;
+  const livestockboardid = await resolveLivestockBoardId(trello, options);
+  if (!livestockboardid) {
+    if (options.optional) return null;
+    throw new Error('ERROR: could not find Livestock board in Trello');
+  }
   const foundLists = await trello.findListsAndCardsOnBoard({
     boardid: livestockboardid,
     listnames: ['Dead', 'Treatments', 'Incoming', 'Config'],
   });
   const findList = (name: LivestockListName) => {
     const found = foundLists.find(list => list.name === name);
-    if (!found) throw new Error(`ERROR: could not find ${name} list in Livestock board`);
-    return found;
+    if (found) return found;
+    if (options.optional) return emptyBoardList(name);
+    throw new Error(`ERROR: could not find ${name} list in Livestock board`);
   };
   const incomingList = findList('Incoming');
   const treatmentList = findList('Treatments');
@@ -681,8 +732,8 @@ export async function fetchRecords(trello: client.Client): Promise<LivestockReco
     dead: { records: [], errors: [], issues: [], list: listMetadata.Dead },
     incoming: { records: [], errors: [], issues: [], list: listMetadata.Incoming },
     treatments: { records: [], errors: [], issues: [], list: listMetadata.Treatments },
-    tagcolors: {},
-    treatmentTypes: [],
+    tagcolors: options.parseOptions?.tagColors || {},
+    treatmentTypes: options.parseOptions?.treatmentTypes || [],
     listIds: {
       dead: deadList.id,
       incoming: incomingList.id,
@@ -693,31 +744,36 @@ export async function fetchRecords(trello: client.Client): Promise<LivestockReco
     issues: [],
   };
 
-  const configCards = configList.cards || [];
-  const colorsResult = parseTagColorsCard(configCards.find(card => card.name === 'Tag Colors'));
-  const typesResult = parseTreatmentTypesCard(configCards.find(card => card.name === 'Treatment Types'));
-  const configIssues = [
-    ...contextualizeIssues(colorsResult.issues, 'Config', colorsResult.metadata),
-    ...contextualizeIssues(typesResult.issues, 'Config', typesResult.metadata),
-  ];
-  if (colorsResult.ok) result.tagcolors = colorsResult.record;
-  if (typesResult.ok) result.treatmentTypes = typesResult.record;
-  const config: LivestockConfig = {
-    tagColors: result.tagcolors,
-    treatmentTypes: result.treatmentTypes || [],
-    issues: configIssues,
-    cards: {
-      tagColors: colorsResult.metadata,
-      treatmentTypes: typesResult.metadata,
-    },
+  let parseOptions: RecordParseOptions = {
+    tagColors: options.parseOptions?.tagColors,
+    treatmentTypes: options.parseOptions?.treatmentTypes,
   };
-  result.config = config;
-  result.issues!.push(...configIssues);
-
-  const parseOptions: RecordParseOptions = {
-    tagColors: colorsResult.ok ? colorsResult.record : undefined,
-    treatmentTypes: typesResult.ok ? typesResult.record : undefined,
-  };
+  if (includeConfig) {
+    const configCards = configList.cards || [];
+    const colorsResult = parseTagColorsCard(configCards.find(card => card.name === 'Tag Colors'));
+    const typesResult = parseTreatmentTypesCard(configCards.find(card => card.name === 'Treatment Types'));
+    const configIssues = [
+      ...contextualizeIssues(colorsResult.issues, 'Config', colorsResult.metadata),
+      ...contextualizeIssues(typesResult.issues, 'Config', typesResult.metadata),
+    ];
+    if (colorsResult.ok) result.tagcolors = colorsResult.record;
+    if (typesResult.ok) result.treatmentTypes = typesResult.record;
+    const config: LivestockConfig = {
+      tagColors: result.tagcolors,
+      treatmentTypes: result.treatmentTypes || [],
+      issues: configIssues,
+      cards: {
+        tagColors: colorsResult.metadata,
+        treatmentTypes: typesResult.metadata,
+      },
+    };
+    result.config = config;
+    result.issues!.push(...configIssues);
+    parseOptions = {
+      tagColors: colorsResult.ok ? colorsResult.record : parseOptions.tagColors,
+      treatmentTypes: typesResult.ok ? typesResult.record : parseOptions.treatmentTypes,
+    };
+  }
   const parseList = <T extends object>(
     listName: LivestockListName,
     cards: TrelloCard[],
@@ -742,4 +798,81 @@ export async function fetchRecords(trello: client.Client): Promise<LivestockReco
   parseList('Dead', deadList.cards || [], parseDeadCard, result.dead);
   result.indexes = buildLivestockIndexes(result);
   return result;
+}
+
+function dedupeById<T extends { id?: string }>(records: T[]): T[] {
+  const seen = new Set<string>();
+  const result: T[] = [];
+  for (const record of records) {
+    if (record.id) {
+      if (seen.has(record.id)) continue;
+      seen.add(record.id);
+    }
+    result.push(record);
+  }
+  return result;
+}
+
+export function mergeLivestockRecords(
+  live: LivestockRecords,
+  archives: LivestockRecords[],
+): LivestockRecords {
+  const merged: LivestockRecords = {
+    dead: {
+      records: dedupeById([
+        ...live.dead.records,
+        ...archives.flatMap(archive => archive.dead.records),
+      ]),
+      errors: dedupeById([
+        ...live.dead.errors,
+        ...archives.flatMap(archive => archive.dead.errors),
+      ]),
+      issues: [
+        ...(live.dead.issues || []),
+        ...archives.flatMap(archive => archive.dead.issues || []),
+      ],
+      list: live.dead.list,
+    },
+    incoming: {
+      records: dedupeById([
+        ...live.incoming.records,
+        ...archives.flatMap(archive => archive.incoming.records),
+      ]),
+      errors: dedupeById([
+        ...live.incoming.errors,
+        ...archives.flatMap(archive => archive.incoming.errors),
+      ]),
+      issues: [
+        ...(live.incoming.issues || []),
+        ...archives.flatMap(archive => archive.incoming.issues || []),
+      ],
+      list: live.incoming.list,
+    },
+    treatments: {
+      records: dedupeById([
+        ...live.treatments.records,
+        ...archives.flatMap(archive => archive.treatments.records),
+      ]),
+      errors: dedupeById([
+        ...live.treatments.errors,
+        ...archives.flatMap(archive => archive.treatments.errors),
+      ]),
+      issues: [
+        ...(live.treatments.issues || []),
+        ...archives.flatMap(archive => archive.treatments.issues || []),
+      ],
+      list: live.treatments.list,
+    },
+    tagcolors: live.tagcolors,
+    treatmentTypes: live.treatmentTypes,
+    config: live.config,
+    listIds: live.listIds,
+    lists: live.lists,
+    issues: [
+      ...(live.issues || []),
+      ...archives.flatMap(archive => archive.issues || []),
+    ],
+  };
+  merged.indexes = buildLivestockIndexes(merged);
+  return merged;
 }

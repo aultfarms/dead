@@ -51,8 +51,8 @@
   border-radius: 5px;
   border: 1px solid #CCCCCC;
   box-shadow: 1px 1px grey;
-  width: calc(4em - 5px);
-  height: calc(4em - 5px);
+  width: calc(3em - 5px);
+  height: calc(3em - 5px);
 }
 
 .colorbutton-notag {
