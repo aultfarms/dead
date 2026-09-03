@@ -738,6 +738,30 @@ test('group day lists keep reused tags distinct and annotate deaths', () => {
   equal(oldDeaths[0]?.animals[0]?.treatmentCount, 2, 'Death lists prior treatments');
   const newDeaths = listGroupDeathDays(records, 'TEST:JAN24-1');
   equal(newDeaths[0]?.animals[0]?.treatmentCount, 1, 'Reused tag death keeps 2024 treatments');
+
+  const onlyNewIncoming = parsed(parseIncomingCard(
+    fixtureCard(
+      'incoming-new-only',
+      'list-incoming',
+      '2026-05-01: TPKA:MAY26-1; Head: 40; Tags: RED1-RED20;',
+    ),
+    { tagColors },
+  ));
+  const oldDeath = parsed(parseDeadCard(
+    fixtureCard('d-before-arrival', 'list-dead', '2024-03-01: RED1'),
+    { tagColors },
+  ));
+  const newerOnly = makeRecords([onlyNewIncoming], [], [oldDeath]);
+  equal(
+    listGroupDeathDays(newerOnly, onlyNewIncoming).length,
+    0,
+    'A newer group does not inherit deaths from before it arrived',
+  );
+  equal(
+    computeDeadAnalytics(newerOnly).groups.find(group => group.group.groupname === 'TPKA:MAY26-1')?.deaths,
+    0,
+    'Death count ignores pre-arrival overlapping tags',
+  );
 });
 
 async function run(): Promise<void> {

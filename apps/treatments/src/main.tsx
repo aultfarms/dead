@@ -8,8 +8,11 @@ import { DebugConsole } from '@aultfarms/debug-console';
 import { App } from './App';
 import { context, state, actions } from './state';
 import { ErrorBoundary } from './ErrorBoundary';
+import { syncVisualViewport } from '@aultfarms/livestock-ui';
 import '@aultfarms/livestock-ui/livestock-ui.css';
 import './index.css';
+
+syncVisualViewport();
 
 const theme = createTheme({
   palette: {

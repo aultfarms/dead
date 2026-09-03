@@ -5,8 +5,11 @@ import CssBaseline from '@mui/material/CssBaseline';
 import { App } from './App';
 import { ErrorBoundary } from './ErrorBoundary';
 import { context, state, actions } from './state';
+import { syncVisualViewport } from '@aultfarms/livestock-ui';
 import '@aultfarms/livestock-ui/livestock-ui.css';
 import './index.css';
+
+syncVisualViewport();
 
 const theme = createTheme({
   palette: {

@@ -500,20 +500,37 @@
   cursor: pointer;
 }
 
-.groupdetaildialog {
+.group-detail-dialog .MuiDialog-paper {
   display: flex;
   flex-direction: column;
-  min-width: 280px;
-  max-width: 90vw;
-  max-height: 80vh;
-  overflow-y: auto;
+  width: min(520px, 92vw);
+  max-height: min(85dvh, var(--vv-height, 85vh));
+  margin: 16px;
+  overflow: hidden;
+}
+
+.groupdetaildialog {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
   padding: 12px;
   gap: 8px;
   font-family: sans-serif;
 }
 
 .groupdetailtitle {
+  flex-shrink: 0;
   font-weight: bold;
+}
+
+.groupdetailbody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .groupdetailempty {
@@ -523,23 +540,41 @@
 .groupdetailday {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  overflow: hidden;
+  gap: 4px;
+  margin-bottom: 10px;
 }
 
 .groupdetaildayhead {
+  flex-shrink: 0;
   font-weight: bold;
+  line-height: 1.4;
+  padding-bottom: 2px;
   border-bottom: 1px solid #CCCCCC;
 }
 
 .groupdetailanimal {
   display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
-  padding-left: 4px;
+  gap: 4px 12px;
+  padding: 3px 0 3px 4px;
+  line-height: 1.4;
+}
+
+.groupdetailtag {
+  flex: 0 0 auto;
+  font-weight: bold;
+}
+
+.groupdetailmeta {
+  flex: 1 1 12em;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .groupdetaildone {
+  flex-shrink: 0;
   color: #FFFFFF;
   border: 1px solid #1976D2;
   border-radius: 3px;

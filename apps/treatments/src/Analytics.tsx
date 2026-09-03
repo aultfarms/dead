@@ -36,6 +36,7 @@ import {
   computeTreatmentsAnalytics,
   listGroupTreatmentDays,
   type GroupDayBucket,
+  type IncomingRecord,
   type NumericMetric,
 } from '@aultfarms/livestock';
 import { context } from './state';
@@ -155,26 +156,28 @@ function GroupDayDialog({
   onClose: () => void;
 }) {
   return (
-    <Dialog open onClose={onClose}>
+    <Dialog className="group-detail-dialog" open onClose={onClose} scroll="paper">
       <div className="groupdetaildialog">
         <div className="groupdetailtitle">{title}</div>
-        {days.length === 0 ? (
-          <div className="groupdetailempty">{emptyText}</div>
-        ) : days.map(day => (
-          <div className="groupdetailday" key={day.date}>
-            <div className="groupdetaildayhead">{day.date}: {day.count} head</div>
-            {day.animals.map(animal => (
-              <div className="groupdetailanimal" key={`${animal.color}${animal.number}`}>
-                <span>{animal.color}{animal.number}</span>
-                <span>
-                  {showProtocol && animal.protocol ? `${animal.protocol} · ` : ''}
-                  {animal.treatmentCount} treatment{animal.treatmentCount === 1 ? '' : 's'}
-                  {animal.deathDate ? ` · died ${animal.deathDate}` : ''}
-                </span>
-              </div>
-            ))}
-          </div>
-        ))}
+        <div className="groupdetailbody">
+          {days.length === 0 ? (
+            <div className="groupdetailempty">{emptyText}</div>
+          ) : days.map(day => (
+            <div className="groupdetailday" key={day.date}>
+              <div className="groupdetaildayhead">{day.date}: {day.count} head</div>
+              {day.animals.map(animal => (
+                <div className="groupdetailanimal" key={`${animal.color}${animal.number}`}>
+                  <span className="groupdetailtag">{animal.color}{animal.number}</span>
+                  <span className="groupdetailmeta">
+                    {showProtocol && animal.protocol ? `${animal.protocol} · ` : ''}
+                    {animal.treatmentCount} treatment{animal.treatmentCount === 1 ? '' : 's'}
+                    {animal.deathDate ? ` · died ${animal.deathDate}` : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
         <button className="groupdetaildone" type="button" onClick={onClose}>Done</button>
       </div>
     </Dialog>
@@ -185,7 +188,7 @@ export const GroupOutcomes = observer(function GroupOutcomes() {
   const { state } = React.useContext(context);
   const records = state.historicalRecords || state.records;
   const filters = state.filters;
-  const [selectedGroup, setSelectedGroup] = React.useState<string | null>(null);
+  const [selectedGroup, setSelectedGroup] = React.useState<IncomingRecord | null>(null);
   const analytics = React.useMemo(
     () => (records ? computeTreatmentsAnalytics(records, filters) : null),
     [records, filters],
@@ -225,9 +228,9 @@ export const GroupOutcomes = observer(function GroupOutcomes() {
             return (
             <TableRow
               className={`${rowClass} group-row-clickable`}
-              key={group.group.groupname}
+              key={group.group.id}
               hover
-              onClick={() => setSelectedGroup(group.group.groupname)}
+              onClick={() => setSelectedGroup(group.group)}
             >
               <TableCell>{group.group.groupname}</TableCell>
               <TableCell
@@ -258,7 +261,7 @@ export const GroupOutcomes = observer(function GroupOutcomes() {
     </TableContainer>
     {selectedGroup && (
       <GroupDayDialog
-        title={selectedGroup}
+        title={selectedGroup.groupname}
         days={days}
         emptyText="No treated animals in this group."
         showProtocol

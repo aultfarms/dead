@@ -4,7 +4,7 @@ import type {
   Tag,
   TreatmentRecord,
 } from './types.js';
-import { buildLivestockIndexes, groupForTagInIndex, tagKey } from './util.js';
+import { buildLivestockIndexes, calendarDate, groupForTagInIndex, tagKey } from './util.js';
 import { tokenizeTreatmentProtocol } from './records.js';
 
 export type AvailableMetric = {
@@ -301,7 +301,7 @@ function treatmentEntries(
       if (tag.color.toUpperCase() === 'NOTAG') {
         counts.excluded += 1;
         counts.reasons.notag += 1;
-      } else if (!group) {
+      } else if (!group || calendarDate(record.date) < calendarDate(group.date)) {
         counts.excluded += 1;
         counts.reasons.unmatchedGroup += 1;
       } else {
@@ -334,41 +334,41 @@ export function computeTreatmentsAnalytics(
   const cohorts = cohortUniverse(records, filters);
   const entriesByGroup = new Map<string, ResolvedTreatment[]>();
   for (const entry of included) {
-    const current = entriesByGroup.get(entry.group.groupname) || [];
+    const current = entriesByGroup.get(entry.group.id) || [];
     current.push(entry);
-    entriesByGroup.set(entry.group.groupname, current);
+    entriesByGroup.set(entry.group.id, current);
   }
   const indexedDeaths = Object.values(indexes.deathsByTag).flat();
   const observedDeathsByGroup = new Map<string, typeof indexedDeaths>();
   const deathsAsOfByGroup = new Map<string, typeof indexedDeaths>();
   for (const death of indexedDeaths) {
     if (!death.group) continue;
-    const groupname = death.group.groupname;
+    if (calendarDate(death.record.date) < calendarDate(death.group.date)) continue;
+    const groupId = death.group.id;
     if (inDateRange(death.record.date, filters)) {
-      const current = observedDeathsByGroup.get(groupname) || [];
+      const current = observedDeathsByGroup.get(groupId) || [];
       current.push(death);
-      observedDeathsByGroup.set(groupname, current);
+      observedDeathsByGroup.set(groupId, current);
     }
     if (death.record.date <= asOfDate) {
-      const current = deathsAsOfByGroup.get(groupname) || [];
+      const current = deathsAsOfByGroup.get(groupId) || [];
       current.push(death);
-      deathsAsOfByGroup.set(groupname, current);
+      deathsAsOfByGroup.set(groupId, current);
     }
   }
   const groups: TreatmentGroupAnalytics[] = [];
   for (const group of cohorts.groups) {
-    const groupname = group.groupname;
-    const entries = entriesByGroup.get(groupname) || [];
+    const entries = entriesByGroup.get(group.id) || [];
     const animals = new Map<string, ResolvedTreatment[]>();
     for (const entry of entries) {
       const current = animals.get(entry.identity) || [];
       current.push(entry);
       animals.set(entry.identity, current);
     }
-    const deaths = observedDeathsByGroup.get(groupname) || [];
+    const deaths = observedDeathsByGroup.get(group.id) || [];
     const deadIdentities = new Set(deaths.map(death => identityFor(group, death.tag)));
     const allDeadIdentities = new Set(
-      (deathsAsOfByGroup.get(groupname) || []).map(death => identityFor(group, death.tag)),
+      (deathsAsOfByGroup.get(group.id) || []).map(death => identityFor(group, death.tag)),
     );
     const cureEligibleIdentities = [...animals.entries()].flatMap(([identity, treatments]) => {
       const latestTreatmentDate = treatments.reduce(
@@ -421,7 +421,11 @@ export function computeTreatmentsAnalytics(
       })).sort((left, right) => left.treatmentCount - right.treatmentCount),
     });
   }
-  groups.sort((left, right) => left.group.groupname.localeCompare(right.group.groupname));
+  groups.sort((left, right) => (
+    left.group.date.localeCompare(right.group.date)
+    || left.group.groupname.localeCompare(right.group.groupname)
+    || left.group.id.localeCompare(right.group.id)
+  ));
   const weeklyCodeCounts = new Map<string, WeeklyTreatmentCodeCount>();
   for (const entry of included) {
     const week = mondayFor(entry.record.date);
@@ -500,9 +504,9 @@ export function computeDeadAnalytics(
   const indexes = records.indexes || buildLivestockIndexes(records);
   const treatedIdentitiesByGroup = new Map<string, Set<string>>();
   for (const treatment of treatmentEntries(records, filters).included) {
-    const current = treatedIdentitiesByGroup.get(treatment.group.groupname) || new Set<string>();
+    const current = treatedIdentitiesByGroup.get(treatment.group.id) || new Set<string>();
     current.add(treatment.identity);
-    treatedIdentitiesByGroup.set(treatment.group.groupname, current);
+    treatedIdentitiesByGroup.set(treatment.group.id, current);
   }
   const counts = emptyCounts();
   const included: {
@@ -529,7 +533,7 @@ export function computeDeadAnalytics(
         counts.reasons.notag += 1;
         continue;
       }
-      if (!group) {
+      if (!group || calendarDate(record.date) < calendarDate(group.date)) {
         counts.excluded += 1;
         counts.reasons.unmatchedGroup += 1;
         continue;
@@ -540,7 +544,7 @@ export function computeDeadAnalytics(
       const treatments = indexes.treatmentsByTag[tagKey(tag)] || [];
       const priorTreatments = treatments.filter(treatment => (
         treatment.group
-        && treatment.group.groupname === group.groupname
+        && treatment.group.id === group.id
         && treatment.record.date <= record.date
       )).sort((left, right) => right.record.date.localeCompare(left.record.date));
       const lastTreatmentDate = priorTreatments[0]?.record.date;
@@ -557,16 +561,16 @@ export function computeDeadAnalytics(
   }
   const groupEntries = new Map<string, typeof included>();
   for (const entry of included) {
-    const current = groupEntries.get(entry.group.groupname) || [];
+    const current = groupEntries.get(entry.group.id) || [];
     current.push(entry);
-    groupEntries.set(entry.group.groupname, current);
+    groupEntries.set(entry.group.id, current);
   }
   const cohorts = cohortUniverse(records, filters);
   const groups: DeadGroupAnalytics[] = cohorts.groups.map(group => {
-    const entries = groupEntries.get(group.groupname) || [];
+    const entries = groupEntries.get(group.id) || [];
     const treatedBeforeDeath = entries.filter(entry => entry.treatedBeforeDeath).length;
     const untreatedBeforeDeath = entries.length - treatedBeforeDeath;
-    const treatedHead = treatedIdentitiesByGroup.get(group.groupname)?.size || 0;
+    const treatedHead = treatedIdentitiesByGroup.get(group.id)?.size || 0;
     return {
       group,
       incomingHead: group.head ?? null,
@@ -651,12 +655,13 @@ export function computeDeadAnalytics(
 
 function deathDateByIdentity(
   records: LivestockRecords,
-  groupname: string,
+  group: IncomingRecord,
 ): Map<string, string> {
   const indexes = records.indexes || buildLivestockIndexes(records);
   const dates = new Map<string, string>();
   for (const death of Object.values(indexes.deathsByTag).flat()) {
-    if (!death.group || death.group.groupname !== groupname) continue;
+    if (!death.group || death.group.id !== group.id) continue;
+    if (calendarDate(death.record.date) < calendarDate(group.date)) continue;
     if (death.tag.color.toUpperCase() === 'NOTAG') continue;
     const identity = identityFor(death.group, death.tag);
     const current = dates.get(identity);
@@ -667,10 +672,12 @@ function deathDateByIdentity(
 
 function treatmentCountByIdentity(
   records: LivestockRecords,
-  groupname: string,
+  group: IncomingRecord,
 ): Map<string, number> {
   const counts = new Map<string, number>();
-  for (const entry of treatmentEntries(records, { groupnames: [groupname] }).included) {
+  for (const entry of treatmentEntries(records, { groupnames: [group.groupname] }).included) {
+    if (entry.group.id !== group.id) continue;
+    if (calendarDate(entry.record.date) < calendarDate(group.date)) continue;
     counts.set(entry.identity, (counts.get(entry.identity) || 0) + 1);
   }
   return counts;
@@ -690,12 +697,15 @@ function bucketsFromAnimals(
 
 export function listGroupTreatmentDays(
   records: LivestockRecords,
-  groupname: string,
+  group: IncomingRecord | string,
   filters: AnalyticsFilters = {},
 ): GroupDayBucket[] {
-  const lifetimeCounts = treatmentCountByIdentity(records, groupname);
-  const deathDates = deathDateByIdentity(records, groupname);
-  const visible = treatmentEntries(records, { ...filters, groupnames: [groupname] }).included;
+  const target = resolveGroup(records, group);
+  if (!target) return [];
+  const lifetimeCounts = treatmentCountByIdentity(records, target);
+  const deathDates = deathDateByIdentity(records, target);
+  const visible = treatmentEntries(records, { ...filters, groupnames: [target.groupname] }).included
+    .filter(entry => entry.group.id === target.id && calendarDate(entry.record.date) >= calendarDate(target.date));
   const byDate = new Map<string, Map<string, GroupDayAnimal>>();
   for (const entry of visible) {
     let animals = byDate.get(entry.record.date);
@@ -718,22 +728,34 @@ export function listGroupTreatmentDays(
   return bucketsFromAnimals(byDate);
 }
 
+function resolveGroup(
+  records: LivestockRecords,
+  group: IncomingRecord | string,
+): IncomingRecord | undefined {
+  if (typeof group !== 'string') return group;
+  return records.incoming.records.find(candidate => candidate.groupname === group);
+}
+
 export function listGroupDeathDays(
   records: LivestockRecords,
-  groupname: string,
+  group: IncomingRecord | string,
   filters: AnalyticsFilters = {},
 ): GroupDayBucket[] {
+  const target = resolveGroup(records, group);
+  if (!target) return [];
   const indexes = records.indexes || buildLivestockIndexes(records);
-  const lifetimeTreatments = treatmentEntries(records, { groupnames: [groupname] }).included;
+  const lifetimeTreatments = treatmentEntries(records, { groupnames: [target.groupname] }).included
+    .filter(entry => entry.group.id === target.id);
   const byDate = new Map<string, Map<string, GroupDayAnimal>>();
   for (const record of records.dead.records) {
     if (!inDateRange(record.date, filters)) continue;
     for (const tag of record.tags) {
-      const group = tag.color.toUpperCase() === 'NOTAG'
+      const assigned = tag.color.toUpperCase() === 'NOTAG'
         ? false
         : groupForTagInIndex(indexes.groupsByTag, indexes.groupsByName, tag, record.date);
-      if (!group || group.groupname !== groupname) continue;
-      const identity = identityFor(group, tag);
+      if (!assigned || assigned.id !== target.id) continue;
+      if (calendarDate(record.date) < calendarDate(target.date)) continue;
+      const identity = identityFor(assigned, tag);
       let animals = byDate.get(record.date);
       if (!animals) {
         animals = new Map();

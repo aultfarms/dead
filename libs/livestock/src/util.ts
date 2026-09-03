@@ -16,10 +16,17 @@ const warn = (..._args: unknown[]) => undefined;
 // Note that a tag range is pre-processed to ensure that it
 // only has tags of the same color.  If there is a color
 // split on a group, the group will have 2 separate ranges.
+export function calendarDate(value: string | undefined | null): string {
+  if (!value) return '';
+  const match = value.trim().match(/^([0-9]{4})-([0-9]{1,2})-([0-9]{1,2})/);
+  if (!match) return '';
+  return `${match[1]}-${match[2]!.padStart(2, '0')}-${match[3]!.padStart(2, '0')}`;
+}
+
 export function rangeContainsTag(r: TagRange, tag: Tag): boolean {
   return (
-    tag.color === r.start.color &&
-    tag.number >= r.start.number && 
+    tag.color.trim().toUpperCase() === r.start.color.trim().toUpperCase() &&
+    tag.number >= r.start.number &&
     tag.number <= r.end.number
   );
 }
@@ -59,10 +66,17 @@ export function groupForTagInIndex(
   tag: Tag,
   asOfDateString?: string,
 ): IncomingRecord | false {
-  if (tag.groupname) return groupsByName[tag.groupname] || false;
-  const candidates = index[tagKey(tag)] || [];
-  const asOfDate = asOfDateString || '9999-12-31';
-  const eligible = candidates.filter(group => group.date <= asOfDate);
+  const asOfDate = calendarDate(asOfDateString);
+  if (!asOfDate) return false;
+  if (tag.groupname) {
+    const named = groupsByName[tag.groupname];
+    const arrived = named ? calendarDate(named.date) : '';
+    if (named && arrived && arrived <= asOfDate) return named;
+  }
+  const eligible = (index[tagKey(tag)] || []).filter(group => {
+    const arrived = calendarDate(group.date);
+    return Boolean(arrived) && arrived <= asOfDate;
+  });
   return eligible[eligible.length - 1] || false;
 }
 
@@ -91,16 +105,22 @@ export function groupForTag(
   asOfDateString: string | false = false
 ): IncomingRecord | false {
   const groups = records.incoming.records;
-  // If the tag already has a "groupname" key, just return that:
-  if (tag && tag.groupname) 
-    return groups.find(g => g.groupname === tag.groupname) || false;
+  const asOfDate = calendarDate(asOfDateString || new Date().toISOString().slice(0, 10));
+  if (!asOfDate) return false;
+  if (tag && tag.groupname) {
+    const named = groups.find(g => g.groupname === tag.groupname);
+    const arrived = named ? calendarDate(named.date) : '';
+    if (named && arrived && arrived <= asOfDate) return named;
+  }
 
   const allfound = groups.filter(g => groupContainsTag(g,tag));
   // if none, return false:
   if (!allfound || allfound.length < 1) return false;
-  const asOfDate = asOfDateString || new Date().toISOString().slice(0, 10);
 
-  const filteredToDate = allfound.filter(g => g.date <= asOfDate);
+  const filteredToDate = allfound.filter(g => {
+    const arrived = calendarDate(g.date);
+    return Boolean(arrived) && arrived <= asOfDate;
+  });
   if (!filteredToDate || filteredToDate.length < 1) {
     warn('WARNING: groupForTag: found multiple possible groups (',allfound,') for tag (',tag,'), but after filtering for date (',asOfDate,') there were none left!');
     return false;
