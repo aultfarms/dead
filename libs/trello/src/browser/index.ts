@@ -5,7 +5,20 @@ import { type TrelloRESTFunction, type TrelloRequestFunction,
   assertTrelloLists, assertTrelloList, assertTrelloCards, assertTrelloCard } from '../types.js';
 import { getUniversalClient } from '../client.js';
 import { idLabelsWriteSucceeded } from '../response.js';
+import {
+  canonicalTrelloReturnUrl,
+  chooseTrelloToken,
+  describeTokenChoice,
+  getAuthorizationReport,
+  noteTrelloAccess,
+  updateAuthorizationFacts,
+  type AuthorizationReport,
+  type BoardStatus,
+  type OrganizationStatus,
+} from '../tokenChoice.js';
+export { getAuthorizationReport, noteTrelloAccess, type AuthorizationReport };
 const info = debug('af/trello#browser:info');
+const AUTH_ATTEMPT_KEY = 'aultfarms.trelloAuthAttempt';
 
 export * from '../index.js'; // export all the universal things
 
@@ -18,116 +31,344 @@ async function waitUntilLoaded(): Promise<void> { return; } // This library is a
 
 //-----------------------------------------------------------------
 let token = '';
+let environmentPromise: Promise<void> | null = null;
 
-async function loadTokenFromStorageOrHash(): Promise<string> {
-  await waitUntilLoaded();
+function storageError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
-  // Check localStorage for existing token
+function readStoredToken(): { token: string; error: string } {
   try {
-    token = localStorage.getItem('trello_token') || '';
-  } catch (e) {
-    info('Error reading trello_token from localStorage', e);
-    token = '';
+    return { token: localStorage.getItem('trello_token') || '', error: '' };
+  } catch (error) {
+    info('Error reading trello_token from localStorage', error);
+    return { token: '', error: storageError(error) };
   }
-  if (token) return token;
+}
 
-  // Check if we're getting here as a result of a previous redirect
-  // that is now coming back to us with a token
-  const hash = window.location.hash.slice(1);
-  if (!hash) return '';
-
-  const hashParams = new URLSearchParams(hash);
-  const urlToken = hashParams.get('token') || '';
-  const error = hashParams.get('error') || '';
-  if (error) throw new Error('ERROR: User declined access or other Trello failure.  Error was: '+error);
-  if (urlToken) {
-    token = urlToken;
-    try {
-      localStorage.setItem('trello_token', token);
-    } catch (e) {
-      info('Error writing trello_token to localStorage', e);
-    }
-
-    // Strip the token (and any other fragment) from the URL so it is
-    // not visible in the address bar once we have safely stored it.
-    try {
-      const { origin, pathname, search } = window.location;
-      const cleanUrl = origin + pathname + search;
-      window.history.replaceState(null, document.title, cleanUrl);
-    } catch (e) {
-      info('Error stripping Trello token fragment from URL', e);
-    }
-
-    return token;
+function writeStoredToken(value: string): string {
+  try {
+    localStorage.setItem('trello_token', value);
+    return '';
+  } catch (error) {
+    info('Error writing trello_token to localStorage', error);
+    return storageError(error);
   }
-  info('WARNING: window.location.hash (', window.location.hash, ') has token, but it was not valid, retrying redirect.')
-  return '';
+}
+
+function clearStoredToken(): void {
+  try {
+    localStorage.removeItem('trello_token');
+  } catch (error) {
+    info('Error clearing invalid trello_token from localStorage', error);
+  }
+}
+
+function authAttemptPending(): boolean {
+  try {
+    return sessionStorage.getItem(AUTH_ATTEMPT_KEY) === '1';
+  } catch (error) {
+    info('Could not read Trello auth attempt flag', error);
+    return false;
+  }
+}
+
+function markAuthAttempt(): void {
+  try {
+    sessionStorage.setItem(AUTH_ATTEMPT_KEY, '1');
+  } catch (error) {
+    info('Could not record Trello auth attempt', error);
+  }
+}
+
+function clearAuthAttempt(): void {
+  try {
+    sessionStorage.removeItem(AUTH_ATTEMPT_KEY);
+  } catch (error) {
+    info('Could not clear Trello auth attempt flag', error);
+  }
+}
+
+export function allowAnotherTrelloLogin(): void {
+  clearAuthAttempt();
+}
+
+function openedFrom(): string {
+  const standalone = (navigator as Navigator & { standalone?: boolean }).standalone === true
+    || window.matchMedia('(display-mode: standalone)').matches;
+  return standalone ? 'a Home Screen icon' : 'Safari';
+}
+
+async function collectEnvironment(): Promise<void> {
+  let serviceWorker = 'No service worker is controlling this page.';
+  if ('serviceWorker' in navigator) {
+    try {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      const controllerUrl = navigator.serviceWorker.controller?.scriptURL || '';
+      if (controllerUrl || registrations.length > 0) {
+        const urls = [
+          controllerUrl,
+          ...registrations.map(registration => (
+            registration.active?.scriptURL
+            || registration.waiting?.scriptURL
+            || registration.installing?.scriptURL
+            || registration.scope
+          )),
+        ].filter((url, index, all) => url && all.indexOf(url) === index);
+        await Promise.all(registrations.map(registration => registration.unregister()));
+        serviceWorker = `Unregistered leftover service worker (${urls.join(', ') || 'unknown script'}).`;
+      }
+    } catch (error) {
+      serviceWorker = `Could not check service workers: ${storageError(error)}.`;
+    }
+  }
+  let referrerIsTrello = false;
+  try {
+    referrerIsTrello = document.referrer
+      ? new URL(document.referrer).hostname.endsWith('trello.com')
+      : false;
+  } catch (error) {
+    info('Could not read document referrer', error);
+  }
+  updateAuthorizationFacts({
+    openedFrom: openedFrom(),
+    serviceWorker,
+    trelloReturn: referrerIsTrello || window.location.hash.length > 1,
+  });
+}
+
+function ensureEnvironment(): Promise<void> {
+  if (!environmentPromise) environmentPromise = collectEnvironment();
+  return environmentPromise;
+}
+
+type MemberCheck = {
+  ok: boolean;
+  status: number;
+  username: string;
+  fullName: string;
+  networkError: string;
+};
+
+async function checkMember(currentToken: string): Promise<MemberCheck> {
+  const url = new URL('https://api.trello.com/1/members/me');
+  url.searchParams.set('key', devKey);
+  url.searchParams.set('token', currentToken);
+  url.searchParams.set('fields', 'username,fullName');
+  try {
+    const response = await fetch(url.toString(), { method: 'GET' });
+    if (!response.ok) {
+      return { ok: false, status: response.status, username: '', fullName: '', networkError: '' };
+    }
+    try {
+      const body = await response.json() as { username?: unknown; fullName?: unknown };
+      return {
+        ok: true,
+        status: response.status,
+        username: typeof body.username === 'string' ? body.username : '',
+        fullName: typeof body.fullName === 'string' ? body.fullName : '',
+        networkError: '',
+      };
+    } catch (error) {
+      return {
+        ok: true,
+        status: response.status,
+        username: '',
+        fullName: '',
+        networkError: storageError(error),
+      };
+    }
+  } catch (error) {
+    return { ok: false, status: 0, username: '', fullName: '', networkError: storageError(error) };
+  }
+}
+
+function memberDescription(check: MemberCheck): string {
+  if (check.networkError && check.status === 0) {
+    return `Could not reach Trello (${check.networkError}).`;
+  }
+  if (!check.ok) return `Trello rejected the token (HTTP ${check.status}).`;
+  const who = [check.username, check.fullName].filter(Boolean).join(', ');
+  if (!who) return `OK (HTTP ${check.status}), but the member name could not be read.`;
+  return `OK for ${who}.`;
+}
+
+async function rememberTokenChoice(): Promise<string> {
+  await waitUntilLoaded();
+  await ensureEnvironment();
+  const stored = readStoredToken();
+  const choice = chooseTrelloToken({ stored: stored.token, hash: window.location.hash });
+  const described = describeTokenChoice(choice, stored.error);
+  let saveDescription = 'No redirect token to save.';
+  if (choice.source === 'hash') {
+    const writeError = writeStoredToken(choice.token);
+    if (writeError) {
+      saveDescription = `Failed (${writeError}). The token was left in the page address so a reload can try again.`;
+    } else {
+      saveDescription = 'Saved.';
+      try {
+        const cleanUrl = canonicalTrelloReturnUrl(window.location.href);
+        window.history.replaceState(null, document.title, cleanUrl);
+      } catch (error) {
+        info('Error stripping Trello token fragment from URL', error);
+        saveDescription = `Saved, but the token is still in the page address (${storageError(error)}).`;
+      }
+    }
+  }
+  updateAuthorizationFacts({
+    hashDescription: described.hashDescription,
+    storedDescription: described.storedDescription,
+    saveDescription,
+  });
+  if (choice.hashPresent || choice.hashError) {
+    updateAuthorizationFacts({ trelloReturn: true });
+  }
+  token = choice.token;
+  return choice.token;
 }
 
 async function authorize(): Promise<void> {
-  info('Authorize started.')
-
-  const found = await loadTokenFromStorageOrHash();
-  if (found) return;
-
-  const return_url = window.location.href.replace(/#.*$/, '');
-  // Redirect browser to Trello authorization endpoint
-  const newhref = 'https://api.trello.com/1/authorize'
-    + '?return_url='+return_url
+  info('Authorize started.');
+  const found = await rememberTokenChoice();
+  if (found) {
+    clearAuthAttempt();
+    return;
+  }
+  if (authAttemptPending()) {
+    const message = 'Trello came back without a usable token. Staying on the login page instead of redirecting again.';
+    updateAuthorizationFacts({ failureStep: message });
+    throw new Error(message);
+  }
+  markAuthAttempt();
+  const returnUrl = encodeURIComponent(canonicalTrelloReturnUrl(window.location.href));
+  const nextUrl = 'https://api.trello.com/1/authorize'
+    + `?return_url=${returnUrl}`
     + '&callback_method=fragment'
     + '&scope=read,write,account'
     + '&expiration=never'
     + '&name=Ault%20Farms%20Apps'
-    + '&key='+devKey
+    + `&key=${devKey}`
     + '&response_type=fragment';
-  window.location.href = newhref; // adds to browser history
-  window.location.replace(newhref); // actually immediately redirects and stops execution
+  window.location.assign(nextUrl);
 }
 
 async function deauthorize(): Promise<void> {
-  localStorage.removeItem('trello_token');
+  clearStoredToken();
+  clearAuthAttempt();
+  token = '';
   await waitUntilLoaded();
-};
+}
 
 export async function checkAuthorization(): Promise<boolean> {
   let currentToken = '';
   try {
-    currentToken = await loadTokenFromStorageOrHash();
-  } catch (e) {
-    info('checkAuthorization: error while loading Trello token', e);
+    currentToken = await rememberTokenChoice();
+  } catch (error) {
+    info('checkAuthorization: error while loading Trello token', error);
+    updateAuthorizationFacts({
+      failureStep: `Could not read the Trello token: ${storageError(error)}.`,
+    });
     return false;
   }
 
-  if (!currentToken) return false;
-
-  // Verify the token by making a lightweight call to the Trello API.
-  const url = new URL('https://api.trello.com/1/members/me');
-  url.searchParams.set('key', devKey);
-  url.searchParams.set('token', currentToken);
-
-  try {
-    const resp = await fetch(url.toString(), { method: 'GET' });
-    if (!resp.ok) {
-      info('checkAuthorization: Trello token validation failed with status', resp.status);
-      try {
-        localStorage.removeItem('trello_token');
-      } catch (e) {
-        info('Error clearing invalid trello_token from localStorage', e);
-      }
-      token = '';
-      return false;
+  if (!currentToken) {
+    const inspected = chooseTrelloToken({
+      stored: readStoredToken().token,
+      hash: window.location.hash,
+    });
+    const returned = authAttemptPending();
+    let failureStep = 'No Trello token is stored in this browser, and the page address has no usable token.';
+    if (inspected.hashError) {
+      failureStep = `Trello returned an error: ${inspected.hashError}.`;
+    } else if (returned) {
+      failureStep = 'Trello came back without a usable token. Staying on the login page instead of redirecting again.';
     }
-
-    // Token is valid; keep it in the module-level variable for future
-    // requests made via request().
-    token = currentToken;
-    return true;
-  } catch (e) {
-    info('checkAuthorization: error while validating Trello token', e);
-    // On network or other errors, treat as not authorized but do not
-    // clear any existing token so a later retry can succeed.
+    updateAuthorizationFacts({
+      failureStep,
+      membersDescription: 'Not called.',
+    });
     return false;
   }
+
+  const choice = chooseTrelloToken({
+    stored: readStoredToken().token,
+    hash: window.location.hash,
+  });
+  let check = await checkMember(currentToken);
+  if (!check.ok && check.status > 0 && choice.source === 'storage' && choice.hashTokenLooksValid) {
+    const hashToken = new URLSearchParams(window.location.hash.replace(/^#/, '')).get('token') || '';
+    clearStoredToken();
+    const writeError = writeStoredToken(hashToken);
+    check = await checkMember(hashToken);
+    token = check.ok ? hashToken : '';
+    updateAuthorizationFacts({
+      saveDescription: writeError
+        ? `The saved token was rejected. The redirect token could not be saved (${writeError}).`
+        : 'The saved token was rejected. The redirect token was saved instead.',
+    });
+    if (check.ok) currentToken = hashToken;
+  }
+
+  updateAuthorizationFacts({ membersDescription: memberDescription(check) });
+  if (check.ok) {
+    token = currentToken;
+    clearAuthAttempt();
+    updateAuthorizationFacts({ failureStep: '' });
+    return true;
+  }
+  if (check.status > 0) {
+    clearStoredToken();
+    token = '';
+    updateAuthorizationFacts({
+      storedDescription: 'removed after Trello rejected it',
+    });
+  }
+  updateAuthorizationFacts({
+    failureStep: check.status > 0
+      ? `Trello rejected the token (HTTP ${check.status}).`
+      : `Could not reach Trello to check the token (${check.networkError}).`,
+  });
+  return false;
+}
+
+export async function describeLivestockAccess(errorMessage: string): Promise<void> {
+  const trello = getClient();
+  let organizations: string[] = [];
+  let organizationFound: OrganizationStatus = 'not checked';
+  let livestockBoard: BoardStatus = 'not checked';
+  let detail = errorMessage;
+  try {
+    const orgs = await trello.listOrganizations();
+    organizations = orgs.map(org => org.displayName || org.name);
+    organizationFound = orgs.some(org => (
+      org.displayName === 'Ault Farms' || org.name === 'Ault Farms'
+    )) ? 'found' : 'missing';
+    const connected = trello.getConnectedOrganization();
+    if (connected) {
+      try {
+        const boards = await trello.get(`/organizations/${connected.id}/boards`, { fields: 'id,name' });
+        const names = boards.map(board => board.name).filter(name => name);
+        livestockBoard = names.includes('Livestock') ? 'found' : 'missing';
+        const visible = names.length ? names.join(', ') : 'none';
+        detail = `${errorMessage} Boards visible in ${connected.displayName || connected.name}: ${visible}.`;
+      } catch (error) {
+        livestockBoard = /board/i.test(errorMessage) ? 'missing' : 'not checked';
+        detail = `${errorMessage} Could not list boards (${storageError(error)}).`;
+      }
+    } else if (/board/i.test(errorMessage)) {
+      livestockBoard = 'missing';
+    }
+  } catch (error) {
+    if (/organization/i.test(errorMessage)) organizationFound = 'missing';
+    if (/board/i.test(errorMessage)) livestockBoard = 'missing';
+    detail = `${errorMessage} Could not list organizations (${storageError(error)}).`;
+  }
+  noteTrelloAccess({
+    organizations,
+    organizationFound,
+    livestockBoard,
+    failureStep: detail,
+  });
 }
 
 const request: TrelloRequestFunction = async (method, path, params) => {

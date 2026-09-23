@@ -23,6 +23,20 @@ export function calendarDate(value: string | undefined | null): string {
   return `${match[1]}-${match[2]!.padStart(2, '0')}-${match[3]!.padStart(2, '0')}`;
 }
 
+export function compareGroupsByIncomingDate(
+  left: { date: string; groupname: string },
+  right: { date: string; groupname: string },
+): number {
+  const leftDate = calendarDate(left.date);
+  const rightDate = calendarDate(right.date);
+  if (leftDate !== rightDate) {
+    if (!leftDate) return 1;
+    if (!rightDate) return -1;
+    return leftDate < rightDate ? 1 : -1;
+  }
+  return left.groupname.localeCompare(right.groupname);
+}
+
 export function rangeContainsTag(r: TagRange, tag: Tag): boolean {
   return (
     tag.color.trim().toUpperCase() === r.start.color.trim().toUpperCase() &&

@@ -6,6 +6,7 @@
   flex-direction: column;
   font-family: sans-serif;
   background: #FFFFFF;
+  touch-action: manipulation;
 }
 
 .tagpane {
@@ -212,6 +213,7 @@
   min-width: 0;
   border: 1px solid #CCCCCC;
   border-radius: 3px;
+  font-size: 16px;
 }
 
 .treatmentstring {
@@ -221,6 +223,7 @@
   font-weight: bold;
   border: 1px solid #CCCCCC;
   border-radius: 3px;
+  font-size: 16px;
 }
 
 .savebutton {
@@ -326,6 +329,8 @@
 }
 
 .legacy-treatment-dialog .MuiDialog-paper {
+  display: flex;
+  flex-direction: column;
   margin: 0;
   max-height: 100%;
   border-radius: 0;
@@ -334,8 +339,9 @@
 .treatmentEditor {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
-  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
   font-family: sans-serif;
 }
 
@@ -355,9 +361,13 @@
 
 .treatmentCodesList {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: row;
   flex-wrap: wrap;
+  align-content: flex-start;
   justify-content: center;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .treatmentCodeButton {
@@ -420,14 +430,17 @@
   justify-content: center;
   text-align: center;
   align-items: center;
-  flex-grow: 1;
+  flex-grow: 0;
+  flex-shrink: 0;
+  min-height: 2.75em;
   border: 1px solid #CCCCCC;
   border-radius: 3px;
-  font-size: 2em;
+  font-size: 1.25em;
   color: white;
   background: linear-gradient(to bottom, #7abcff 0%, #60abf8 44%, #4096ee 100%);
-  margin-top: 10px;
+  margin-top: auto;
   margin-left: 5px;
+  margin-bottom: 8px;
 }
 
 .treatmentEditorDoneButton:active {
@@ -444,6 +457,7 @@
   min-height: 100%;
   justify-content: center;
   padding: 1em;
+  overflow: auto;
   background: #FFFFFF;
 }
 

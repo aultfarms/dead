@@ -31,12 +31,14 @@ import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import {
+  compareGroupsByIncomingDate,
   computeDeadAnalytics,
   listGroupDeathDays,
   type GroupDayBucket,
   type IncomingRecord,
   type NumericMetric,
 } from '@aultfarms/livestock';
+import { RecentDeathTotals } from '@aultfarms/livestock-ui';
 import { context } from './state';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend, Title);
@@ -170,19 +172,19 @@ export const GroupMortality = observer(function GroupMortality() {
     () => (records && selectedGroup ? listGroupDeathDays(records, selectedGroup, filters) : []),
     [records, selectedGroup, filters],
   );
-  if (!analytics) return null;
+  if (!analytics || !records) return null;
   const groups = [...analytics.groups].sort((left, right) => (
-    right.group.date.localeCompare(left.group.date)
-    || right.group.dateLastActivity.localeCompare(left.group.dateLastActivity)
-    || left.group.groupname.localeCompare(right.group.groupname)
+    compareGroupsByIncomingDate(left.group, right.group)
   ));
 
   return (
-    <>
+    <div className="groupstab">
+    <RecentDeathTotals records={records} />
     <TableContainer component={Paper} variant="outlined" className="history-scroll">
       <Table size="small" stickyHeader>
         <TableHead>
           <TableRow>
+            <TableCell>In</TableCell>
             <TableCell>Group</TableCell>
             <TableCell align="right">Treatments (%)</TableCell>
             <TableCell align="right">Deaths (%)</TableCell>
@@ -205,6 +207,7 @@ export const GroupMortality = observer(function GroupMortality() {
                 hover
                 onClick={() => setSelectedGroup(group.group)}
               >
+                <TableCell>{group.group.date}</TableCell>
                 <TableCell>{group.group.groupname}</TableCell>
                 <TableCell
                   align="right"
@@ -242,7 +245,7 @@ export const GroupMortality = observer(function GroupMortality() {
         onClose={() => setSelectedGroup(null)}
       />
     )}
-    </>
+    </div>
   );
 });
 

@@ -774,3 +774,34 @@ export function listGroupDeathDays(
   }
   return bucketsFromAnimals(byDate);
 }
+
+export type RecentDeathWindows = {
+  past7Days: number;
+  past30Days: number;
+  past365Days: number;
+};
+
+function utcDayNumber(isoDate: string): number {
+  return Math.floor(Date.parse(`${isoDate}T00:00:00Z`) / 86400000);
+}
+
+export function countRecentDeaths(
+  records: LivestockRecords,
+  asOfDate: string,
+): RecentDeathWindows {
+  const counts: RecentDeathWindows = { past7Days: 0, past30Days: 0, past365Days: 0 };
+  const asOf = calendarDate(asOfDate);
+  if (!asOf) return counts;
+  const asOfDay = utcDayNumber(asOf);
+  for (const record of records.dead.records) {
+    const date = calendarDate(record.date);
+    if (!date) continue;
+    const age = asOfDay - utcDayNumber(date);
+    if (age < 0) continue;
+    const head = record.tags.length;
+    if (age <= 6) counts.past7Days += head;
+    if (age <= 29) counts.past30Days += head;
+    if (age <= 364) counts.past365Days += head;
+  }
+  return counts;
+}

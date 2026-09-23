@@ -6,6 +6,7 @@
   flex-direction: column;
   font-family: sans-serif;
   background: #FFFFFF;
+  touch-action: manipulation;
 }
 
 .tagpane {
@@ -175,6 +176,10 @@
   cursor: pointer;
 }
 
+.calfcard-static {
+  cursor: default;
+}
+
 .calfcardheader {
   display: flex;
   justify-content: center;
@@ -252,6 +257,7 @@
   min-width: 0;
   border: 1px solid #CCCCCC;
   border-radius: 3px;
+  font-size: 16px;
 }
 
 .duplicatewarning {
@@ -366,6 +372,7 @@
   min-height: 100%;
   justify-content: center;
   padding: 1em;
+  overflow: auto;
   background: #FFFFFF;
 }
 

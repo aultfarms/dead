@@ -13,9 +13,9 @@ body {
 }
 #root {
   position: fixed;
-  top: var(--vv-offset-top, 0px);
-  left: var(--vv-offset-left, 0px);
-  width: var(--vv-width, 100%);
+  top: 0;
+  left: 0;
+  width: 100%;
   height: var(--vv-height, 100dvh);
   min-width: 320px;
   overflow: hidden;

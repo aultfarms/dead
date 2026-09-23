@@ -14,7 +14,7 @@ import {
   type Tag,
   type TreatmentRecord,
 } from '@aultfarms/livestock';
-import { ColorBar, Keypad, TagBar, useTagEntryKeys } from '@aultfarms/livestock-ui';
+import { ColorBar, Keypad, TagBar, TrelloLoginReport, useTagEntryKeys } from '@aultfarms/livestock-ui';
 import pkg from '../package.json';
 import { context, type HistoryView } from './state';
 import { Issues } from './Issues';
@@ -436,6 +436,7 @@ const TreatmentEditor = observer(function TreatmentEditor({
       fullScreen
       open={open}
       onClose={onCancel}
+      disableRestoreFocus
     >
       <div className="treatmentEditor">
         <input
@@ -477,7 +478,10 @@ const TreatmentEditor = observer(function TreatmentEditor({
           className="treatmentEditorDoneButton"
           type="button"
           disabled={!canDone}
-          onClick={onDone}
+          onClick={() => {
+            if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+            onDone();
+          }}
         >
           Done
         </button>
@@ -615,11 +619,12 @@ export const App = observer(function App() {
     );
   } else if (!state.trelloAuthorized) {
     content = (
-      <Stack className="loading-screen" alignItems="center" spacing={1}>
+      <Stack className="loading-screen" alignItems="stretch" spacing={1}>
         <Alert severity="info">Log in with Trello to load and save treatment records.</Alert>
         <Button variant="contained" onClick={() => void actions.loginWithTrello()}>
           Login with Trello
         </Button>
+        <TrelloLoginReport summary={state.authSummary} lines={state.authReportLines} />
       </Stack>
     );
   } else if (state.fatalError && !state.records) {

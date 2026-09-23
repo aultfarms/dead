@@ -41,6 +41,8 @@ export type AppState = {
   repairing: boolean;
   trelloAuthorized: boolean;
   fatalError: string;
+  authSummary: string;
+  authReportLines: string[];
   records: LivestockRecords | null;
   historicalRecords: LivestockRecords | null;
   organizations: TrelloOrg[];
@@ -70,6 +72,8 @@ export const state = observable<AppState>({
   repairing: false,
   trelloAuthorized: false,
   fatalError: '',
+  authSummary: '',
+  authReportLines: [],
   records: null,
   historicalRecords: null,
   organizations: [],

@@ -1,6 +1,6 @@
 import * as trelloLibrary from '@aultfarms/trello';
 import { runInAction } from 'mobx';
-import { loadRecords } from './actions';
+import { loadRecords, publishAuthReport } from './actions';
 import { state } from './state';
 
 export async function initialize(): Promise<void> {
@@ -8,6 +8,7 @@ export async function initialize(): Promise<void> {
     const authorized = await trelloLibrary.checkAuthorization();
     if (!authorized) {
       runInAction(() => {
+        publishAuthReport();
         state.trelloAuthorized = false;
         state.loading = false;
       });
@@ -18,6 +19,7 @@ export async function initialize(): Promise<void> {
     runInAction(() => {
       state.loading = false;
       state.fatalError = error instanceof Error ? error.message : String(error);
+      publishAuthReport();
     });
   }
 }

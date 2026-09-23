@@ -48,6 +48,12 @@ function addActivity(text: string, type: 'good' | 'bad' = 'good'): void {
   };
 }
 
+export function publishAuthReport(): void {
+  const report = trelloLibrary.getAuthorizationReport();
+  state.authSummary = report.summary;
+  state.authReportLines = report.lines.slice();
+}
+
 function applyLiveRecords(loaded: LivestockRecords): void {
   state.records = loaded;
   state.historicalRecords = null;
@@ -116,19 +122,29 @@ export const loadRecords = action('loadRecords', async () => {
     if (!loaded) throw new Error('Livestock board was not found');
     const organizations = await trello.listOrganizations();
     const connectedOrg = trello.getConnectedOrganization();
+    trelloLibrary.noteTrelloAccess({
+      organizations: organizations.map(org => org.displayName || org.name),
+      organizationFound: 'found',
+      livestockBoard: 'found',
+      failureStep: '',
+    });
     runInAction(() => {
       applyLiveRecords(loaded);
       state.organizations = organizations;
       state.connectedOrgId = connectedOrg?.id || '';
       state.trelloAuthorized = true;
+      publishAuthReport();
       if (!state.draft.tag.color) {
         state.draft.tag.color = Object.keys(loaded.tagcolors)[0] || '';
       }
       addActivity('Livestock records loaded.');
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await trelloLibrary.describeLivestockAccess(message);
     runInAction(() => {
-      state.fatalError = error instanceof Error ? error.message : String(error);
+      state.fatalError = message;
+      publishAuthReport();
       addActivity(`Could not load livestock records: ${state.fatalError}`, 'bad');
     });
   } finally {
@@ -141,13 +157,17 @@ export const loadRecords = action('loadRecords', async () => {
 export const loginWithTrello = action('loginWithTrello', async () => {
   state.loading = true;
   state.fatalError = '';
+  trelloLibrary.allowAnotherTrelloLogin();
   try {
     await client();
     await loadRecords();
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await trelloLibrary.describeLivestockAccess(message);
     runInAction(() => {
       state.loading = false;
-      state.fatalError = error instanceof Error ? error.message : String(error);
+      state.fatalError = message;
+      publishAuthReport();
       addActivity(`Trello login failed: ${state.fatalError}`, 'bad');
     });
   }

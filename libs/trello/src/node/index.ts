@@ -6,6 +6,14 @@ import json5 from 'json5';
 import type { TrelloRequestParams, TrelloRESTFunction, TrelloRequestFunction, TrelloRequestResponse } from '../types.js';
 import debug from 'debug';
 import { getUniversalClient } from '../client.js';
+import { noteTrelloAccess } from '../tokenChoice.js';
+export { getAuthorizationReport, noteTrelloAccess, type AuthorizationReport } from '../tokenChoice.js';
+
+export function allowAnotherTrelloLogin(): void {}
+
+export async function describeLivestockAccess(errorMessage: string): Promise<void> {
+  noteTrelloAccess({ failureStep: errorMessage });
+}
 
 export * from '../index.js';
 

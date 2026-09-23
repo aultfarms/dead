@@ -14,6 +14,7 @@ import {
 import {
   buildLivestockIndexes,
   buildTagGroupIndex,
+  compareGroupsByIncomingDate,
   findDuplicateDeath,
   groupForTagInIndex,
 } from '../util.js';
@@ -32,6 +33,7 @@ import {
 import {
   computeDeadAnalytics,
   computeTreatmentsAnalytics,
+  countRecentDeaths,
   listGroupDeathDays,
   listGroupTreatmentDays,
 } from '../analytics.js';
@@ -762,6 +764,43 @@ test('group day lists keep reused tags distinct and annotate deaths', () => {
     0,
     'Death count ignores pre-arrival overlapping tags',
   );
+});
+
+test('groups sort by incoming date and recent deaths use rolling windows', () => {
+  const ordered = [
+    { date: '2024-01-01', groupname: 'OLD', dateLastActivity: '2026-09-01T00:00:00.000Z' },
+    { date: '2026-03-01', groupname: 'NEW', dateLastActivity: '2020-01-01T00:00:00.000Z' },
+    { date: '2025-06-15', groupname: 'MID-B', dateLastActivity: '2026-09-01T00:00:00.000Z' },
+    { date: '2025-06-15', groupname: 'MID', dateLastActivity: '2020-01-01T00:00:00.000Z' },
+  ].sort(compareGroupsByIncomingDate);
+  equal(ordered.map(group => group.groupname).join(','), 'NEW,MID,MID-B,OLD', 'Newest incoming date is first');
+
+  const asOf = '2026-09-23';
+  const death = (
+    date: string,
+    tags: Array<{ color: string; number: number }>,
+  ): DeadRecord => ({
+    date,
+    tags,
+    id: `${date}-${tags.map(tag => `${tag.color}${tag.number}`).join('-')}`,
+    idList: 'list-dead',
+    cardName: date,
+    dateLastActivity: `${date}T00:00:00.000Z`,
+  });
+  const records = makeRecords([], [], [
+    death(asOf, [{ color: 'RED', number: 1 }, { color: 'NOTAG', number: 1 }]),
+    death('2026-09-17', [{ color: 'RED', number: 2 }]),
+    death('2026-09-16', [{ color: 'RED', number: 3 }]),
+    death('2026-08-25', [{ color: 'RED', number: 4 }]),
+    death('2026-08-24', [{ color: 'RED', number: 5 }]),
+    death('2025-09-24', [{ color: 'RED', number: 6 }]),
+    death('2025-09-23', [{ color: 'RED', number: 7 }]),
+    death('2025-09-22', [{ color: 'RED', number: 8 }]),
+  ]);
+  const totals = countRecentDeaths(records, asOf);
+  equal(totals.past7Days, 3, 'Today and six days back count, including NOTAG');
+  equal(totals.past30Days, 5, 'A death 30 days back is outside the 30-day window');
+  equal(totals.past365Days, 7, 'A death 365 days back is outside the 365-day window');
 });
 
 async function run(): Promise<void> {

@@ -14,7 +14,7 @@ import {
   type LivestockRecords,
   type Tag,
 } from '@aultfarms/livestock';
-import { ColorBar, Keypad, TagBar, useTagEntryKeys } from '@aultfarms/livestock-ui';
+import { ColorBar, Keypad, TagBar, TrelloLoginReport, useTagEntryKeys } from '@aultfarms/livestock-ui';
 import pkg from '../package.json';
 import { context, type DeadView } from './state';
 import { DeadAnalytics, GroupMortality } from './Analytics';
@@ -37,16 +37,6 @@ function utcDay(date: string): number {
 
 function daysBetween(start: string, end: string): number {
   return utcDay(end) - utcDay(start);
-}
-
-function daysAgo(date: string): number {
-  return utcDay(new Date().toISOString().slice(0, 10)) - utcDay(date);
-}
-
-function durationText(days: number): string {
-  if (days === 0) return 'today';
-  if (days === 1) return 'yesterday';
-  return `${days} days ago`;
 }
 
 function selectedTagColor(colorName: string, colors: Record<string, string>): string {
@@ -152,26 +142,35 @@ const Preferences = observer(function Preferences() {
   );
 });
 
-function DeadCalfCard({
+function sameAnimal(records: LivestockRecords, tag: Tag, date: string, candidate: Tag, candidateDate: string): boolean {
+  if (!sameTag(candidate, tag)) return false;
+  const selectedGroup = groupForTag(records, tag, date);
+  const candidateGroup = groupForTag(records, candidate, candidateDate);
+  return (!selectedGroup && !candidateGroup)
+    || Boolean(selectedGroup && candidateGroup && selectedGroup.groupname === candidateGroup.groupname);
+}
+
+function AnimalHistoryCard({
   records,
-  record,
   tag,
+  date,
+  note,
+  alreadyDiedOn,
   onSelect,
 }: {
   records: LivestockRecords;
-  record: DeadRecord;
   tag: Tag;
-  onSelect: () => void;
+  date: string;
+  note?: string;
+  alreadyDiedOn?: string;
+  onSelect?: () => void;
 }) {
-  const group = groupForTag(records, tag, record.date);
+  const group = groupForTag(records, tag, date);
   const treatments = records.treatments.records
-    .filter(treatment => treatment.date <= record.date)
-    .filter(treatment => treatment.tags.some(candidate => sameTag(candidate, tag)))
-    .filter(treatment => {
-      const treatmentGroup = groupForTag(records, tag, treatment.date);
-      return (!group && !treatmentGroup)
-        || Boolean(group && treatmentGroup && group.groupname === treatmentGroup.groupname);
-    })
+    .filter(treatment => treatment.date <= date)
+    .filter(treatment => treatment.tags.some(candidate => (
+      sameAnimal(records, tag, date, candidate, treatment.date)
+    )))
     .sort((left, right) => right.date.localeCompare(left.date));
   const groupDeaths = group
     ? records.dead.records.reduce((total, death) => (
@@ -182,20 +181,23 @@ function DeadCalfCard({
       ), 0)
     : 0;
   const mortality = group && group.head ? (groupDeaths / group.head) * 100 : null;
-  const daysOnFeed = group ? daysBetween(group.date, record.date) : null;
+  const daysOnFeed = group ? daysBetween(group.date, date) : null;
   let groupClass = 'calfcardgoodgroup';
   if (mortality !== null && mortality >= 10) groupClass = 'calfcardmoderategroup';
   if (mortality !== null && mortality >= 20) groupClass = 'calfcardbadgroup';
+  const select = onSelect
+    ? () => onSelect()
+    : undefined;
 
   return (
     <div
-      className="calfcard"
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') onSelect();
-      }}
+      className={`calfcard ${select ? '' : 'calfcard-static'}`}
+      role={select ? 'button' : undefined}
+      tabIndex={select ? 0 : undefined}
+      onClick={select}
+      onKeyDown={select ? (event) => {
+        if (event.key === 'Enter' || event.key === ' ') select();
+      } : undefined}
     >
       <div className="calfcardheader">
         <span
@@ -209,7 +211,8 @@ function DeadCalfCard({
           ? 'unknown time onsite.'
           : `${daysOnFeed} day${daysOnFeed === 1 ? '' : 's'} onsite.`}
       </div>
-      {record.note && <div className="calfcardnote">{record.note}</div>}
+      {alreadyDiedOn && <div className="historyerror">Already died on {alreadyDiedOn}!</div>}
+      {note && <div className="calfcardnote">{note}</div>}
       {group ? (
         <div className={`calfcardgroupinfo ${groupClass}`}>
           {group.groupname}:&nbsp;
@@ -223,13 +226,32 @@ function DeadCalfCard({
         {treatments.map(treatment => (
           <div className="calfcardtreatment" key={treatment.id}>
             <span>{treatment.treatment}</span>
-            <span>{treatment.date} ({daysBetween(treatment.date, record.date)}d before)</span>
+            <span>{treatment.date} ({daysBetween(treatment.date, date)}d before)</span>
           </div>
         ))}
       </div>
     </div>
   );
 }
+
+const DraftAnimalCard = observer(function DraftAnimalCard() {
+  const { state } = React.useContext(context);
+  const records = state.records;
+  const tag = state.draft.tag;
+  if (!records || !tag.color || tag.number < 1) return null;
+  const alreadyDiedOn = records.dead.records
+    .filter(record => record.tags.some(candidate => sameAnimal(records, tag, state.draft.date, candidate, record.date)))
+    .sort((left, right) => right.date.localeCompare(left.date))[0]?.date;
+  return (
+    <AnimalHistoryCard
+      records={records}
+      tag={tag}
+      date={state.draft.date}
+      note={state.draft.note}
+      alreadyDiedOn={alreadyDiedOn}
+    />
+  );
+});
 
 const DateHistory = observer(function DateHistory() {
   const { state, actions } = React.useContext(context);
@@ -243,13 +265,15 @@ const DateHistory = observer(function DateHistory() {
   return (
     <div className="history">
       <div className="historytitle">{state.draft.date}: {total} DEAD total.</div>
+      <DraftAnimalCard />
       {records && dateRecords.flatMap(record => (
         record.tags.map((tag, index) => (
-          <DeadCalfCard
+          <AnimalHistoryCard
             key={`${record.id}-${tag.color}${tag.number}-${index}`}
             records={records}
-            record={record}
             tag={tag}
+            date={record.date}
+            note={record.note || ''}
             onSelect={() => setPending({ record, tag })}
           />
         ))
@@ -279,45 +303,9 @@ const DateHistory = observer(function DateHistory() {
 });
 
 const TagHistory = observer(function TagHistory() {
-  const { state } = React.useContext(context);
-  const records = state.records;
-  if (!records || !state.draft.tag.color || state.draft.tag.number < 1) {
-    return <div className="historytag" />;
-  }
-
-  const selectedGroup = groupForTag(records, state.draft.tag, state.draft.date);
-  const inSameAnimal = (tag: Tag, date: string) => {
-    if (!sameTag(tag, state.draft.tag)) return false;
-    const group = groupForTag(records, tag, date);
-    return (!selectedGroup && !group)
-      || Boolean(selectedGroup && group && selectedGroup.groupname === group.groupname);
-  };
-  const treatments = records.treatments.records
-    .filter(record => record.tags.some(tag => inSameAnimal(tag, record.date)))
-    .sort((left, right) => right.date.localeCompare(left.date));
-  const death = records.dead.records
-    .filter(record => record.tags.some(tag => inSameAnimal(tag, record.date)))
-    .sort((left, right) => right.date.localeCompare(left.date))[0];
-
-  let previousDays = -1;
   return (
     <div className="historytag">
-      <div className="historyheader">
-        {treatments.length} Treatments
-        {selectedGroup ? `, ${selectedGroup.groupname}` : ''}
-      </div>
-      {death && <div className="historyerror">Already died on {death.date}!</div>}
-      {treatments.map(record => {
-        const days = daysAgo(record.date);
-        const gap = previousDays < 0 ? '' : ` (+${days - previousDays})`;
-        previousDays = days;
-        return (
-          <div className="historytagentry" key={`${record.id}-${record.date}`}>
-            <div className="historytreatment">{record.treatment}</div>
-            <div className="historyduration">{durationText(days)}{gap}</div>
-          </div>
-        );
-      })}
+      <DraftAnimalCard />
     </div>
   );
 });
@@ -546,11 +534,12 @@ export const App = observer(function App() {
     );
   } else if (!state.trelloAuthorized) {
     content = (
-      <Stack className="loading-screen" alignItems="center" spacing={1}>
+      <Stack className="loading-screen" alignItems="stretch" spacing={1}>
         <Alert severity="info">Log in with Trello to load and save mortality records.</Alert>
         <Button variant="contained" onClick={() => void actions.loginWithTrello()}>
           Login with Trello
         </Button>
+        <TrelloLoginReport summary={state.authSummary} lines={state.authReportLines} />
       </Stack>
     );
   } else if (state.fatalError && !state.records) {
